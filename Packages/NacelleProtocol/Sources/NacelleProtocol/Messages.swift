@@ -137,6 +137,15 @@ public enum AIFailureText {
     }
 }
 
+/// Les deux messages `uvcFailed` de la vie privée native (spec § 6.5 bis). ptzd les envoie tels quels ; les apps les
+/// reconnaissent par ces textes partagés pour montrer leur propre traduction (comme `AIFailureText`).
+public enum PrivacyFailureText {
+    /// Repli sur l'inclinaison : l'image et le micro ne sont pas coupés.
+    public static let fallbackToTilt = "La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné."
+    /// La caméra n'a pas quitté sa vie privée native après deux essais : la vie privée reste active.
+    public static let exitFailed = "La vie privée n'a pas pu être levée : la caméra n'a pas répondu."
+}
+
 /// État complet publié par ptzd.
 public struct StateSnapshot: Equatable, Sendable {
     public var camera: CameraPresence
