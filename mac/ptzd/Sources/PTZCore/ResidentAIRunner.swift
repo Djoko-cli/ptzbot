@@ -97,8 +97,11 @@ public final class ResidentAIRunner: AIRunner {
     private var idleTimer: (any Cancellable)?
     private var lastIdleRearm: TimeInterval?
     private var noPrewarmUntil: TimeInterval?
-    /// Extrémités de tuyau de tous les utilitaires lancés (tests).
+    #if DEBUG
+    /// Extrémités de tuyau de tous les utilitaires lancés (tests seulement : en production, le tableau grossirait de
+    /// quatre entrées à chaque lancement, sans limite).
     private(set) var recordedPipes: [PipeIdentity] = []
+    #endif
 
     public init(
         executableURL: URL,
@@ -256,7 +259,9 @@ public final class ResidentAIRunner: AIRunner {
             }
         }
         // Avant le lancement : Process referme lui-même ses copies des extrémités du fils.
+        #if DEBUG
         recordPipes(of: helper)
+        #endif
         do {
             try process.run()
         } catch {
@@ -275,6 +280,7 @@ public final class ResidentAIRunner: AIRunner {
         read(helper)
     }
 
+    #if DEBUG
     private func recordPipes(of helper: Helper) {
         for handle in [
             helper.input.fileHandleForReading, helper.input.fileHandleForWriting,
@@ -286,6 +292,7 @@ public final class ResidentAIRunner: AIRunner {
             }
         }
     }
+    #endif
 
     /// Lit la sortie de l'utilitaire sur un fil à part et rend chaque morceau, dans l'ordre, à la file principale.
     private func read(_ helper: Helper) {
