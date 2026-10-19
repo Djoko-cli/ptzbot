@@ -17,10 +17,30 @@ struct BannerInputs: Equatable {
 enum StatusBanner {
     static let qrRefused = "QR code refusé : relancez l'appairage sur le Mac"
 
-    // Vie privée (spec § 6.5 bis). Le mode `tilt` ne coupe ni l'image ni le micro : le bandeau le dit.
+    // Vie privée (spec § 6.5 bis). « Image et micro coupés » seulement quand ptzd a constaté le mode natif ; sinon
+    // l'objectif est seulement détourné, et la raison donnée par ptzd dit pourquoi.
     static let privacy = "Vie privée"
     static let privacyNative = "Vie privée : image et micro coupés"
-    static let privacyTilt = "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés."
+    /// Mode natif en cours, pas encore constaté.
+    static let privacyTilt = "Vie privée : objectif détourné"
+    static let privacyNoSDK = "Vie privée : objectif seulement détourné. Sans le SDK OBSBOT sur le Mac, l'image et le micro ne sont pas coupés."
+    static let privacyUpdating = "Vie privée : objectif seulement détourné, en attendant la mise à jour du SDK OBSBOT sur le Mac."
+    static let privacyFailed = "Vie privée : objectif seulement détourné, l'image et le micro n'ont pas pu être coupés."
+
+    /// Le texte de la vie privée selon le mode et la raison publiés par ptzd ; le texte d'avant pour un ptzd ancien.
+    static func privacyText(mode: PrivacyMode?, reason: PrivacyReason?) -> String {
+        switch mode {
+        case .native: privacyNative
+        case nil: privacy
+        case .tilt:
+            switch reason {
+            case nil: privacyTilt
+            case .noSDK: privacyNoSDK
+            case .updating: privacyUpdating
+            case .failed: privacyFailed
+            }
+        }
+    }
 
     // Enregistrement (spec enregistrement § 6).
     static let photosDenied = "L'accès à Photos est refusé : autorisez-le dans Réglages › PTZBot › Photos."
@@ -63,12 +83,7 @@ enum StatusBanner {
                 return "Caméra débranchée"
             }
             if state.privacy {
-                // Un ptzd d'avant la vie privée V2 n'envoie pas le mode : le texte d'avant.
-                switch state.privacyMode {
-                case .native: return privacyNative
-                case .tilt: return privacyTilt
-                case nil: return privacy
-                }
+                return privacyText(mode: state.privacyMode, reason: state.privacyReason)
             }
             if state.control == .failed {
                 return "Suivi IA non coupé : les mouvements peuvent être contrés"

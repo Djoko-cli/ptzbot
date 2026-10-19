@@ -248,7 +248,15 @@ struct ControlScreen: View {
         .disabled(!model.privacyToggleEnabled)
         .opacity(model.privacyToggleEnabled ? 1 : 0.4)
         .accessibilityLabel(privacyOn ? "Quitter la vie privée" : "Vie privée")
-        .accessibilityHint("Coupe l'image et le micro de la caméra")
+        .accessibilityHint(Self.privacyHint(on: privacyOn))
+    }
+
+    /// L'indication VoiceOver du bouton de vie privée, selon son état (spec § 6.5 bis) : l'entrée ne coupe l'image et le
+    /// micro qu'avec le SDK sur le Mac ; la sortie ramène toujours la caméra à sa position d'avant.
+    nonisolated static func privacyHint(on: Bool) -> String {
+        on
+            ? "Ramène la caméra à sa position d'avant la vie privée"
+            : "Détourne l'objectif et, avec le SDK OBSBOT sur le Mac, coupe l'image et le micro de la caméra"
     }
 }
 
