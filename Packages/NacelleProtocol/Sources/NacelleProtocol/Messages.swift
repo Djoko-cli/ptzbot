@@ -74,6 +74,14 @@ public enum VoiceFrame {
     }
 }
 
+/// Façon dont la vie privée est tenue (spec § 6.5 bis).
+public enum PrivacyMode: String, Codable, Sendable {
+    /// Mode vie privée de l'OBSBOT : image noire et micro coupé.
+    case native
+    /// Repli : objectif incliné vers le bas, sans coupure de l'image ni du micro.
+    case tilt
+}
+
 /// Avancement de la coupure du suivi IA (prise en main).
 public enum ControlState: String, Codable, Sendable {
     case idle
@@ -134,6 +142,8 @@ public struct StateSnapshot: Equatable, Sendable {
     public var camera: CameraPresence
     public var control: ControlState
     public var privacy: Bool
+    /// Mode de la vie privée en cours ; nil hors vie privée, et chez un ptzd d'avant la vie privée V2 (spec § 6.5 bis).
+    public var privacyMode: PrivacyMode?
     /// Degrés, ou nil si inconnus.
     public var pan: Double?
     /// Degrés, ou nil si inconnus.
@@ -154,7 +164,8 @@ public struct StateSnapshot: Equatable, Sendable {
         zoom: Int?,
         moving: Bool,
         aiTracking: AITracking = .unknown,
-        talkback: TalkbackAvailability = .unavailable
+        talkback: TalkbackAvailability = .unavailable,
+        privacyMode: PrivacyMode? = nil
     ) {
         self.camera = camera
         self.control = control
@@ -165,6 +176,7 @@ public struct StateSnapshot: Equatable, Sendable {
         self.moving = moving
         self.aiTracking = aiTracking
         self.talkback = talkback
+        self.privacyMode = privacyMode
     }
 }
 

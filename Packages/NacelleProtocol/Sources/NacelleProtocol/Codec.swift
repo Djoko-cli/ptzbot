@@ -143,7 +143,7 @@ extension ClientMessage: Codable {
 
 extension StateSnapshot: Codable {
     private enum CodingKeys: String, CodingKey {
-        case camera, control, privacy, pan, tilt, zoom, moving, aiTracking, talkback
+        case camera, control, privacy, pan, tilt, zoom, moving, aiTracking, talkback, privacyMode
     }
 
     public init(from decoder: any Decoder) throws {
@@ -160,7 +160,9 @@ extension StateSnapshot: Codable {
             aiTracking: try container.decodeIfPresent(AITracking.self, forKey: .aiTracking) ?? .unknown,
             // Un ptzd d'avant la parole n'envoie pas ce champ, et un ptzd futur pourrait y ajouter une valeur : dans les
             // deux cas la parole est indisponible, et le reste de l'état reste lisible (iPhones déjà installés).
-            talkback: (try? container.decodeIfPresent(TalkbackAvailability.self, forKey: .talkback)) ?? .unavailable
+            talkback: (try? container.decodeIfPresent(TalkbackAvailability.self, forKey: .talkback)) ?? .unavailable,
+            // Absent chez un ptzd d'avant la vie privée V2 ; une valeur inconnue (un futur ptzd) se lit aussi nil (spec § 6.5 bis).
+            privacyMode: (try? container.decodeIfPresent(PrivacyMode.self, forKey: .privacyMode))
         )
     }
 
@@ -176,6 +178,8 @@ extension StateSnapshot: Codable {
         try container.encode(moving, forKey: .moving)
         try container.encode(aiTracking, forKey: .aiTracking)
         try container.encode(talkback, forKey: .talkback)
+        // Omis (et non null) hors vie privée : un client ancien n'a rien de nouveau à ignorer.
+        try container.encodeIfPresent(privacyMode, forKey: .privacyMode)
     }
 }
 
