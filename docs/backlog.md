@@ -113,3 +113,11 @@ Conseil de la session go2rtc (règle de l'ancien watchdog, éprouvée le 09/10) 
 La spec haut-parleur (§ 5.6) prévoyait une source `exec` avec `#backchannel=1` dans le flux `obsbot`, qui relaie la voix vers `udp://127.0.0.1:1986`. Le yaml est maintenant généré par PTZBot, qui ne connaît pas cette option ; seule voie actuelle : le « fichier personnalisé », qui retire tout le reste à la génération. Proposé : une option de la génération (Réglages › Caméra), puisque talkd est déjà dans l'app. Évolution de la spec B3, à décider.
 
 Conseil de la session go2rtc : une option de la génération plutôt que le fichier personnalisé, soit une entrée de plus dans le flux `obsbot` : `exec:<ffmpeg> -f <format reçu> -i - -f s16le -ar 16000 -ac 1 udp://127.0.0.1:1986?pkt_size=640#backchannel=1#audio=<codec>`. Le format et le codec exacts sont à lire dans `pkg/pcm` de go2rtc 1.9.14 (`NewBackchannel`). Ce ffmpeg ne lit qu'un tuyau : il ne crée aucun client CoreAudio.
+
+## Vie privée V2 : OBSBOT Center et session du SDK toujours ouverte (19/10/2026)
+
+Depuis la 1.1.1, ptzd garde l'utilitaire obsbot-ai chargé tant qu'il tourne avec le SDK, pour que l'entrée en vie privée prenne toujours le chemin rapide (décision de Djoko). Aucun mécanisme ne libère la session du SDK quand une autre app, OBSBOT Center par exemple, veut la caméra : il n'existe qu'un avertissement dans le journal. À vérifier au banc : OBSBOT Center reste-t-il utilisable PTZBot ouvert ? Sinon, prévoir une libération de la session (sur demande dans le panneau, ou à la détection d'OBSBOT Center), avec une vie privée qui reste protégée par l'inclinaison pendant ce temps.
+
+## App iOS sans anglais (19/10/2026)
+
+L'app iOS n'a pas de catalogue de textes : tous ses textes sont des littéraux français, dont ceux de la vie privée V2. Ajouter un catalogue (`Localizable.xcstrings`) avec l'anglais, comme sur Mac.
