@@ -13,7 +13,7 @@ import Foundation
 /// file. `err 3` (« ordre inconnu ») vient d'un utilitaire plus ancien que ptzd : `unknownOrder`, et l'utilitaire est
 /// arrêté, pour que le suivant parte du programme recompilé (spec § 6.5 bis). Une **lecture** de l'état ratée
 /// (`err 2` de `privacy status`) n'arrête pas l'utilitaire : elle ne rend pas la session douteuse, et une session neuve
-/// coûterait 4 s.
+/// coûterait 4 s. C'est le réconciliateur qui la renouvelle (`reset`) après deux lectures ratées de suite en mode natif.
 @MainActor
 public final class ResidentAIRunner: AIRunner {
     /// Identité d'une extrémité de tuyau (fstat), pour vérifier en test qu'aucune ne fuit.

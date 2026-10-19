@@ -39,6 +39,12 @@ public final class UVCCamera: CameraDevice {
         device != nil
     }
 
+    /// La caméra est branchée (vue par IOKit), même si ses commandes ne sont pas encore ouvertes. Fiable dès le retour de
+    /// `startWatching`, qui signale la présence actuelle avant de rendre la main.
+    public var isAttached: Bool {
+        attached
+    }
+
     /// Ouvre la caméra si elle est branchée, puis suit ses branchements. Sans effet si
     /// la surveillance tourne déjà. Une UVCCamera vit aussi longtemps que le processus :
     /// la surveillance IOKit garde un pointeur non retenu vers elle et n'est jamais démontée.

@@ -11,7 +11,8 @@ import NacelleProtocol
 ///   exception : le rebranchement, d'où la caméra revient éveillée et droite (mesuré le 19/10).
 /// - **Rien n'est supposé.** Après chaque ordre natif, l'état réel est relu (`privacy status`) pendant la bascule de la
 ///   caméra ; il l'est aussi lentement pendant le mode natif, et quand une réponse manque ou échoue. `native` n'est
-///   publié qu'après une lecture `privacy`. L'inclinaison lue par le SDK est le second témoin d'un état illisible.
+///   publié qu'après une lecture `privacy`, et n'est plus affirmé après deux relectures ratées de suite (session du SDK
+///   renouvelée, lecture, puis `privacy on`). L'inclinaison lue par le SDK est le second témoin d'un état illisible.
 /// - **Le dernier choix gagne.** Une étape en cours (un ordre à l'utilitaire, la bascule qui le suit, une attente de
 ///   position) va à son terme ; la séquence repart alors vers le nouvel état voulu. Un délai d'attente, une relecture
 ///   lente ou une vérification s'arrêtent tout de suite. Aucun ordre n'est croisé : l'utilitaire n'en traite qu'un à la
@@ -65,6 +66,10 @@ public final class PrivacyReconciler {
     /// OBSBOT) est vu au plus tard après ce délai. Une lecture ne réveille pas la caméra (mesuré, deux par seconde
     /// pendant 15 s).
     public static let rereadInterval: TimeInterval = 30
+    /// Un branchement vu dans ce délai après la sortie de veille du Mac n'est pas tenu pour une coupure d'alimentation :
+    /// la caméra dormait peut-être encore en mode natif, et le Mac a pu renuméroter le bus USB sans la couper
+    /// (réserve 1 de la troisième relecture). Il est traité comme un démarrage de ptzd : l'état réel d'abord.
+    public static let wakeWindow: TimeInterval = 30
     /// Second témoin, l'inclinaison lue par le SDK (positive vers le bas) : environ 85 en vie privée native, 70 à −70°
     /// UVC (mesuré). À partir de `nativePitch`, la nacelle est dans la pose du mode natif ; jusqu'à `awakePitch`, elle
     /// n'y est pas.
@@ -142,6 +147,8 @@ public final class PrivacyReconciler {
         /// La réponse de l'ordre.
         let start: TimeInterval
         let deadline: TimeInterval
+        /// L'inclinaison lue par la lecture d'avant, pour juger la nacelle immobile (m4).
+        var lastPitch: Double?
     }
 
     /// Pourquoi une sortie échoue, pour un message exact.
@@ -211,6 +218,9 @@ public final class PrivacyReconciler {
     /// La caméra a été vue débranchée par ce ptzd : son prochain branchement est un rebranchement (coupure
     /// d'alimentation), pas le démarrage de ptzd.
     private var sawAbsence = false
+    /// Le Mac est sorti de veille à cet instant (horloge du planificateur) : un branchement tout proche n'est pas un
+    /// rebranchement après une coupure d'alimentation.
+    private var lastWake: TimeInterval?
     /// Le client à prévenir d'un échec ; nil pour une réapplication (démarrage, branchement).
     private var requester: ClientID?
     /// Dernier ordre absolu envoyé, pour la vérification du § 6.5.
@@ -298,10 +308,19 @@ public final class PrivacyReconciler {
     /// éveillée et droite (mesuré le 19/10), elle filmerait aussitôt. La protection à −70° part tout de suite, puis le
     /// mode natif, sans attendre une lecture de l'état (4 s de session neuve) : c'est la seule exception à « un seul
     /// pilote ». Au **démarrage** de ptzd, la caméra peut encore être en mode natif (PTZBot relancé) : l'état réel
-    /// d'abord.
+    /// d'abord. Deux cas sont des mises sous tension, donc des rebranchements : une caméra absente au démarrage de ptzd
+    /// (`cameraAbsentAtStartup`). À l'inverse, un branchement vu dans les `wakeWindow` secondes qui suivent la sortie de
+    /// veille du Mac n'en est pas un : le Mac a pu renuméroter le bus sans couper l'alimentation, la caméra dormait
+    /// peut-être encore en mode natif (traité comme un démarrage).
     public func cameraPresenceChanged(_ present: Bool) {
         defer { changed() }
-        let replugged = present && sawAbsence
+        var replugged = present && sawAbsence
+        if replugged, let woke = lastWake, scheduler.now - woke <= Self.wakeWindow {
+            replugged = false
+            if mayBeNative, isActive {
+                log("Caméra branchée juste après la sortie de veille du Mac : elle a pu garder le mode natif ; l'état réel d'abord.")
+            }
+        }
         if !present {
             sawAbsence = true
         }
@@ -364,6 +383,19 @@ public final class PrivacyReconciler {
         reconcile(interrupt: true)
     }
 
+    /// ptzd démarre sans voir la caméra (rien de branché, ou pas encore). Une caméra alimentée par l'USB et absente ne
+    /// peut pas être en mode natif à son prochain branchement : c'est une mise sous tension, traitée comme un
+    /// rebranchement et non comme le démarrage de ptzd (m1 de la troisième relecture).
+    public func cameraAbsentAtStartup() {
+        sawAbsence = true
+    }
+
+    /// Le Mac sort de veille : la fenêtre `wakeWindow` s'ouvre, et en mode natif l'état réel est relu tout de suite.
+    public func systemWoke() {
+        lastWake = scheduler.now
+        refreshRealState()
+    }
+
     /// Un client vient de se connecter, ou le Mac sort de veille : en mode natif, l'état réel est relu tout de suite
     /// au lieu d'attendre la relecture lente (constat B de la relecture).
     public func refreshRealState() {
@@ -384,9 +416,14 @@ public final class PrivacyReconciler {
 
     private func requestEntry(from client: ClientID) -> (code: ErrorCode, message: String)? {
         requester = client
-        // Le suivi IA ramènerait l'objectif vers la personne.
+        // Le suivi IA ramènerait l'objectif vers la personne. Pas d'ordre à une caméra qui peut être en mode natif : la
+        // coupure attend qu'elle soit lue éveillée (m2 de la troisième relecture).
         if control.mayBeTracking {
-            control.take()
+            if mayBeNative && runner.supportsNativePrivacy {
+                pendingTake = true
+            } else {
+                control.take()
+            }
         }
         guard !wanted else {
             // Déjà voulue : l'état réel est relu (mode natif), ou la vérification de l'inclinaison relancée.
@@ -726,15 +763,23 @@ public final class PrivacyReconciler {
             return
         }
         let (seen, pitch, witness) = witnessed(reading)
-        if let current = switching {
+        if var current = switching {
             let target: CameraRunState = current.order == .on ? .privacy : .run
             var switched = seen == target
             if target == .run {
-                // Réveillée, elle a fini sa remontée : jamais encore dans la pose du mode natif. Dite réveillée par le
-                // seul témoin, elle ne l'est qu'une fois passé le délai de l'état `run`.
-                switched = switched && (pitch ?? 0) < Self.nativePitch
+                // Réveillée, elle a fini sa remontée : jamais encore dans la pose du mode natif, et immobile (deux
+                // inclinaisons de suite à moins d'1° l'une de l'autre : une remontée depuis une autre pose est plus longue
+                // que les 15° mesurés, m4). Dite réveillée par le seul témoin, elle ne l'est qu'une fois passé le délai
+                // de l'état `run`.
+                var still = true
+                if let pitch {
+                    still = current.lastPitch.map { abs($0 - pitch) <= Self.stableTolerance } ?? false
+                }
+                switched = switched && (pitch ?? 0) < Self.nativePitch && still
                     && (witness == nil || scheduler.now - current.start >= Self.witnessWakeDelay)
             }
+            current.lastPitch = pitch
+            switching = current
             if !switched && scheduler.now < current.deadline {
                 // La bascule n'est pas finie : relue un peu plus tard, et rien d'autre ne part.
                 wait(Self.pollInterval, as: .switching) { $0.issue(.status) }
@@ -763,8 +808,23 @@ public final class PrivacyReconciler {
             apply(seen, pitch: pitch)
         } else {
             readFailures += 1
+            if real == .privacy, readFailures >= Self.maxAttempts {
+                readLost()
+            }
         }
         reconcile()
+    }
+
+    /// Le mode natif est constaté, mais l'état ne se lit plus depuis `maxAttempts` relectures de suite (OBSBOT Center
+    /// ouvert, USB pas prêt après la veille, session du SDK périmée) : la caméra a pu être réveillée sans que ptzd le voie.
+    /// « Image et micro coupés » n'est plus affirmé (« protection en cours »), la session du SDK est renouvelée, et la
+    /// séquence reprend : lecture, puis `privacy on` (sans effet si la caméra y est déjà, mesuré), puis des relectures
+    /// espacées. Aucun ordre de position tant que la caméra peut être en mode natif.
+    private func readLost() {
+        log("Caméra : l'état réel ne se lit plus (\(readFailures) lectures de suite) ; « image et micro coupés » n'est plus affirmé. Session du SDK renouvelée.")
+        real = nil
+        readFailures = 0
+        runner.reset()
     }
 
     /// Un état lu (ou dit par le témoin).

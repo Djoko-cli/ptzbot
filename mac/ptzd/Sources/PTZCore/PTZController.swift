@@ -97,10 +97,17 @@ public final class PTZController {
         privacy.refreshRealState()
     }
 
-    /// Le Mac sort de veille : la caméra a pu être réveillée pendant ce temps ; même relecture qu'à une connexion.
+    /// Le Mac sort de veille : la caméra a pu être réveillée pendant ce temps ; même relecture qu'à une connexion. Un
+    /// branchement vu juste après est traité comme un démarrage, non comme une coupure d'alimentation (réserve 1).
     public func systemWoke() {
         log("Le Mac sort de veille.")
-        privacy.refreshRealState()
+        privacy.systemWoke()
+    }
+
+    /// ptzd démarre sans voir la caméra : son prochain branchement est une mise sous tension, pas un redémarrage de ptzd
+    /// (la caméra ne peut pas être restée en mode natif).
+    public func cameraAbsentAtStartup() {
+        privacy.cameraAbsentAtStartup()
     }
 
     /// PTZBot a recompilé ou réinstallé obsbot-ai (message `aiUpdated`) : l'utilitaire repart du nouveau programme, et

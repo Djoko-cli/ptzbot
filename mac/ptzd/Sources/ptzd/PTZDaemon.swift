@@ -173,6 +173,10 @@ struct PTZDaemon {
 
         log("ptzd démarre.")
         camera.startWatching()
+        if !camera.isAttached {
+            // Une caméra absente au démarrage, puis branchée, sort d'une mise sous tension (pas du mode natif de PTZBot).
+            controller.cameraAbsentAtStartup()
+        }
         server.start()
         talkbackWatcher.start()
         wakeWatcher.start()

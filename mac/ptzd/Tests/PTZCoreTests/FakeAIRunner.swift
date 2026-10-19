@@ -14,7 +14,11 @@ import Testing
 /// - **les mouvements propres de la caméra**, avec `attach(camera:scheduler:)` : la bascule (état 3 en 0,5 s), la
 ///   descente vers 85° (1,1 s), la remontée à la position d'avant (0,5 s), l'état 1 vers 1,7 s après le réveil, et le
 ///   retour éveillé et droit après une coupure d'alimentation (`powerCycle`). Sans caméra liée, la bascule est
-///   immédiate.
+///   immédiate ;
+/// - **la remontée suit la course** : 0,5 s pour les 15° mesurés (85° vers 70°), proportionnellement plus pour une
+///   course plus longue (`riseSpeed`), la position changeant par paliers de `riseStep` ;
+/// - **l'invariant « un seul pilote »** : avec une caméra liée, `FakeCamera` fait échouer tout test où un ordre UVC part
+///   pendant que la caméra gère seule sa position (mode natif, bascule, remontée), hors rebranchement.
 @MainActor
 final class FakeAIRunner: AIRunner {
     enum Order: Equatable {
@@ -32,6 +36,9 @@ final class FakeAIRunner: AIRunner {
     static let switchTime: TimeInterval = 0.5
     static let descentTime: TimeInterval = 1.1
     static let riseTime: TimeInterval = 0.5
+    /// Vitesse de la remontée (degrés par seconde) : 15° en 0,5 s, mesuré. Une course plus longue dure plus longtemps.
+    static let riseSpeed: Double = 30
+    static let riseStep: TimeInterval = 0.25
     static let wakeStateTime: TimeInterval = 1.7
     /// La pose du mode natif, en degrés UVC (85° vers le bas).
     static let nativeTilt: Double = -85
@@ -69,6 +76,8 @@ final class FakeAIRunner: AIRunner {
     private var motionGeneration = 0
     /// La position d'avant le mode natif, que la caméra reprend d'elle-même au réveil.
     private var beforeNative: PanTiltPosition?
+    /// La remontée propre de la caméra dure jusqu'à cet instant.
+    private var risingUntil: TimeInterval = 0
 
     /// L'ordre en cours, sans réponse encore.
     var inFlight: Order? { current?.order }
@@ -95,6 +104,12 @@ final class FakeAIRunner: AIRunner {
     func attach(camera: FakeCamera, scheduler: FakeScheduler) {
         self.camera = camera
         self.scheduler = scheduler
+        camera.drivesItsOwnPosition = { [weak self] in self?.drivesItsOwnPosition ?? false }
+    }
+
+    /// La caméra gère seule sa position : mode natif, bascule en cours, ou remontée propre pas finie.
+    var drivesItsOwnPosition: Bool {
+        state == .privacy || heading != nil || (scheduler.map { $0.now < risingUntil } ?? false)
     }
 
     /// Coupure d'alimentation : la caméra revient éveillée et droite (mesuré), et la session du SDK ne vaut plus.
@@ -102,6 +117,7 @@ final class FakeAIRunner: AIRunner {
         motionGeneration += 1
         state = .run
         heading = nil
+        risingUntil = 0
         beforeNative = nil
         sessionOpen = false
         camera?.position = PanTiltPosition(pan: 0, tilt: 0)
@@ -220,8 +236,13 @@ final class FakeAIRunner: AIRunner {
             state = target
             return
         }
-        heading = target
         motionGeneration += 1
+        if !on, state == .run {
+            // L'entrée n'avait pas encore agi (l'état est resté `run`, la nacelle n'a pas bougé) : ce réveil ne change rien.
+            heading = nil
+            return
+        }
+        heading = target
         let generation = motionGeneration
         if on {
             let before = camera.position
@@ -238,9 +259,22 @@ final class FakeAIRunner: AIRunner {
         } else {
             // Sans position notée (état posé par le test), celle où ptzd la met toujours avant le mode natif : −70°.
             let back = beforeNative ?? PanTiltPosition(pan: camera.position.pan, tilt: PrivacyReconciler.privacyTilt)
-            scheduler.schedule(after: Self.riseTime) { [weak self, weak camera] in
-                guard let self, motionGeneration == generation else { return }
-                camera?.position = back
+            // La remontée dure plus longtemps pour une course plus longue (m4) : la position change par paliers.
+            let duration = max(Self.riseTime, abs(back.tilt - camera.position.tilt) / Self.riseSpeed)
+            let start = camera.position
+            risingUntil = scheduler.now + duration
+            let steps = duration <= Self.riseTime + 1e-9 ? 1 : max(1, Int((duration / Self.riseStep).rounded()))
+            for step in 1...steps {
+                let fraction = Double(step) / Double(steps)
+                scheduler.schedule(after: duration * fraction) { [weak self, weak camera] in
+                    guard let self, motionGeneration == generation else { return }
+                    camera?.position = step == steps
+                        ? back
+                        : PanTiltPosition(
+                            pan: start.pan + (back.pan - start.pan) * fraction,
+                            tilt: start.tilt + (back.tilt - start.tilt) * fraction
+                        )
+                }
             }
             scheduler.schedule(after: Self.wakeStateTime) { [weak self] in
                 guard let self, motionGeneration == generation else { return }

@@ -813,7 +813,8 @@ struct PrivacyReconcilerTests {
         _ = controller.handle(.privacy(on: false), from: 1)
         #expect(runner.inFlight == .privacy(false))
         runner.answer(.privacy(false))
-        scheduler.advance(by: PrivacyReconciler.switchDelay)
+        // Deux inclinaisons de suite pour juger la nacelle immobile (m4) : la seconde lecture, 0,5 s après la première.
+        scheduler.advance(by: PrivacyReconciler.switchDelay + PrivacyReconciler.pollInterval)
         #expect(!controller.snapshot.privacy)
         #expect(camera.absoluteCommands.last == Self.before)
     }
@@ -895,7 +896,8 @@ struct PrivacyReconcilerTests {
         scheduler.advance(by: 1.5)
         #expect(runner.inFlight == .privacy(false))
         runner.answer(.privacy(false))
-        scheduler.advance(by: PrivacyReconciler.switchDelay)
+        // Jamais en mode natif : la première lecture est déjà `run`, la nacelle est jugée immobile à la seconde (m4).
+        scheduler.advance(by: PrivacyReconciler.switchDelay + PrivacyReconciler.pollInterval)
         #expect(!controller.snapshot.privacy)
         #expect(runner.privacyOrders == [false])
         #expect(camera.absoluteCommands == [Self.down, Self.before])
@@ -916,7 +918,8 @@ struct PrivacyReconcilerTests {
         controller.cameraPresenceChanged(true)
         #expect(runner.inFlight == .privacy(false))
         runner.answer(.privacy(false))
-        scheduler.advance(by: PrivacyReconciler.switchDelay)
+        // Deux inclinaisons de suite pour juger la nacelle immobile (m4) : la seconde lecture, 0,5 s après la première.
+        scheduler.advance(by: PrivacyReconciler.switchDelay + PrivacyReconciler.pollInterval)
         #expect(!controller.snapshot.privacy)
         #expect(camera.absoluteCommands.last == Self.before)
     }
@@ -1096,6 +1099,230 @@ struct PrivacyReconcilerTests {
         runner.answer(.privacy(true))
         scheduler.advance(by: PrivacyReconciler.switchDelay)
         #expect(controller.snapshot.privacyMode == .native)
+    }
+
+    // MARK: - Troisième relecture : I1, m1, m2, m4, m11, réserve 1
+
+    @Test("I1 : mode natif constaté, relectures ratées et caméra réveillée par un autre moyen : « image et micro coupés » ne reste jamais affiché au-delà de deux relectures lentes ; privacy on ensuite")
+    func steadyReadsFailThenWake() {
+        let controller = ready()
+        enterNative(controller)
+        let resets = runner.resets
+        runner.stateUnreadable = true
+        runner.pitchUnreadable = true
+        runner.wakeExternally()
+        // Deux relectures lentes ratées au plus : la première dans les 30 s, la seconde 30 s plus tard.
+        scheduler.advance(by: 2 * PrivacyReconciler.rereadInterval + 1)
+        #expect(controller.snapshot.privacyMode == .tilt)
+        #expect(controller.snapshot.privacyReason != nil)
+        #expect(runner.resets == resets + 1)
+        let shown = published.values.count
+        scheduler.advance(by: 600)
+        // Plus jamais « natif » tant que rien ne se lit ; lecture, puis un nouvel ordre natif, sans aucun ordre de position.
+        #expect(published.values.dropFirst(shown).allSatisfy { $0.privacyMode != .native })
+        #expect(controller.snapshot.privacyMode == .tilt)
+        #expect(runner.privacyOrders.count > 1)
+        #expect(camera.absoluteCommands == [Self.down])
+    }
+
+    @Test("I1 : deux lectures ratées de suite en mode natif : « protection en cours », session du SDK neuve pour la lecture suivante, qui republie « natif » si la caméra y est")
+    func steadyReadsFailNewSession() {
+        let controller = ready()
+        enterNative(controller)
+        runner.autoReads = false
+        #expect(runner.sessions == 1)
+        let resets = runner.resets
+        runner.stateUnreadable = true
+        runner.pitchUnreadable = true
+        // Première lecture ratée : rien ne change, la même session sert encore.
+        scheduler.advance(by: PrivacyReconciler.rereadInterval)
+        runner.answer(.status)
+        #expect(controller.snapshot.privacyMode == .native)
+        #expect(runner.resets == resets)
+        // Seconde, de suite : plus d'affirmation, session neuve.
+        scheduler.advance(by: PrivacyReconciler.rereadInterval)
+        runner.answer(.status)
+        #expect(controller.snapshot.privacyMode == .tilt)
+        #expect(controller.snapshot.privacyReason == .pending)
+        #expect(runner.resets == resets + 1)
+        #expect(runner.inFlight == .status)
+        #expect(runner.sessions == 2)
+        runner.stateUnreadable = false
+        runner.pitchUnreadable = false
+        runner.answer(.status)
+        #expect(controller.snapshot.privacyMode == .native)
+        #expect(controller.snapshot.privacyReason == nil)
+        #expect(runner.privacyOrders == [true])
+        #expect(camera.absoluteCommands == [Self.down])
+    }
+
+    @Test("I1 : une lecture ratée isolée, puis réussie, ne change rien : même session, « natif » toujours publié")
+    func isolatedFailedReadChangesNothing() {
+        let controller = ready()
+        enterNative(controller)
+        runner.autoReads = false
+        let resets = runner.resets
+        published.values.removeAll()
+        runner.stateUnreadable = true
+        runner.pitchUnreadable = true
+        scheduler.advance(by: PrivacyReconciler.rereadInterval)
+        runner.answer(.status)
+        runner.stateUnreadable = false
+        runner.pitchUnreadable = false
+        scheduler.advance(by: PrivacyReconciler.rereadInterval)
+        runner.answer(.status)
+        // Le compte des échecs repart à zéro : un échec de plus ne suffit pas.
+        runner.stateUnreadable = true
+        runner.pitchUnreadable = true
+        scheduler.advance(by: PrivacyReconciler.rereadInterval)
+        runner.answer(.status)
+        #expect(controller.snapshot.privacyMode == .native)
+        #expect(published.values.allSatisfy { $0.privacyMode == .native })
+        #expect(runner.resets == resets)
+        #expect(runner.sessions == 1)
+    }
+
+    @Test("m1 : caméra absente au démarrage de ptzd (mode natif retenu), puis branchée : elle sort d'une mise sous tension, −70° tout de suite, sans lecture d'abord")
+    func absentAtStartupThenPlugged() {
+        store.state = PersistedState(privacy: true, saved: SavedPosition(pan: 12, tilt: 3, zoom: nil), native: true)
+        camera.isPresent = false
+        let controller = makeController()
+        controller.cameraAbsentAtStartup()
+        runner.powerCycle()
+        camera.isPresent = true
+        controller.cameraPresenceChanged(true)
+        #expect(camera.absoluteCommands == [PanTiltPosition(pan: 12, tilt: PrivacyReconciler.privacyTilt)])
+        #expect(!store.state.native)
+        #expect(controller.snapshot.privacyReason == .pending)
+        #expect(runner.inFlight == .tracking(false))
+        runner.answer(.tracking(false))
+        settle()
+        runner.autoReads = true
+        runner.answer(.privacy(true))
+        scheduler.advance(by: PrivacyReconciler.switchDelay)
+        #expect(controller.snapshot.privacyMode == .native)
+    }
+
+    @Test("m1, contraste : caméra présente au démarrage (mode natif retenu), puis redémarrée par ptzd : l'état réel d'abord, aucun ordre de position")
+    func presentAtStartupReadsFirst() {
+        store.state = PersistedState(privacy: true, saved: SavedPosition(pan: 12, tilt: 3, zoom: nil), native: true)
+        runner.state = .privacy
+        camera.position = Self.native
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        #expect(camera.absoluteCommands.isEmpty)
+        #expect(runner.inFlight == .status)
+    }
+
+    @Test("m2 : entrée répétée par un second client, mode natif possible : la coupure du suivi attend que la caméra soit vue éveillée, aucun ordre à la caméra endormie")
+    func repeatedEntryWhileNativeDefersTrackingCut() {
+        store.state = PersistedState(privacy: true, saved: SavedPosition(pan: 12, tilt: 3, zoom: nil), native: true)
+        runner.state = .privacy
+        camera.position = Self.native
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        runner.answer(.status)
+        #expect(controller.snapshot.privacyMode == .native)
+        #expect(controller.handle(.privacy(on: true), from: 2) == nil)
+        // L'état réel est relu ; rien d'autre ne part.
+        #expect(runner.inFlight == .status)
+        runner.autoReads = true
+        runner.answer(.status)
+        scheduler.advance(by: 2 * PrivacyReconciler.rereadInterval)
+        #expect(runner.orders.isEmpty)
+        #expect(controller.snapshot.privacyMode == .native)
+        // Réveillée par un autre moyen, puis lue éveillée à la relecture lente : la coupure du suivi part alors.
+        runner.wakeExternally()
+        scheduler.advance(by: 2 * PrivacyReconciler.rereadInterval)
+        #expect(runner.orders == [false])
+    }
+
+    @Test("m4 : sortie d'un mode natif pris depuis une autre pose (remontée longue) : la position d'avant ne part qu'une fois la nacelle immobile")
+    func exitAfterLongRise() {
+        let controller = ready()
+        // Inclinaison refusée : le mode natif part de la pose d'avant, 85° plus haut que sa pose de mode natif.
+        camera.failNextWrite = .ioKit(-536870212)
+        _ = controller.handle(.privacy(on: true), from: 1)
+        runner.autoReads = true
+        runner.answer(.privacy(true))
+        scheduler.advance(by: FakeAIRunner.descentTime + 0.1)
+        #expect(controller.snapshot.privacyMode == .native)
+        #expect(camera.position == Self.native)
+        #expect(camera.absoluteCommands.isEmpty)
+        _ = controller.handle(.privacy(on: false), from: 1)
+        runner.answer(.privacy(false))
+        // La remontée dure environ 3 s ; l'état `run` se lit vers 1,7 s, nacelle encore en mouvement.
+        scheduler.advance(by: 10)
+        #expect(!controller.snapshot.privacy)
+        #expect(camera.absoluteCommands == [Self.before])
+        #expect(camera.position == Self.before)
+        #expect(camera.zoomCommands == [33])
+    }
+
+    @Test("m11 : le faux signale tout ordre UVC pendant le mode natif, mais pas après un rebranchement")
+    func fakeFlagsOrdersWhileNative() {
+        let controller = ready()
+        enterNative(controller)
+        withKnownIssue {
+            try? camera.setPanTiltAbsolute(panDegrees: 0, tiltDegrees: 0)
+        }
+        withKnownIssue {
+            try? camera.setPanTiltRelative(PanTiltRelative(panDirection: 0, panSpeed: 0, tiltDirection: 0, tiltSpeed: 0))
+        }
+        withKnownIssue {
+            try? camera.setZoom(10)
+        }
+        camera.isPresent = false
+        controller.cameraPresenceChanged(false)
+        runner.powerCycle()
+        camera.isPresent = true
+        // Rebranchée : éveillée et droite, les ordres sont permis (aucun problème signalé).
+        try? camera.setPanTiltAbsolute(panDegrees: 0, tiltDegrees: PrivacyReconciler.privacyTilt)
+    }
+
+    @Test("Réserve 1 : une caméra branchée juste après la sortie de veille du Mac est traitée comme un démarrage : l'état réel d'abord, pas de −70° immédiat")
+    func replugRightAfterMacWake() {
+        let controller = ready()
+        enterNative(controller)
+        camera.isPresent = false
+        controller.cameraPresenceChanged(false)
+        controller.systemWoke()
+        runner.powerCycle()
+        runner.autoReads = false
+        scheduler.advance(by: 5)
+        camera.isPresent = true
+        let commands = camera.absoluteCommands
+        controller.cameraPresenceChanged(true)
+        #expect(camera.absoluteCommands == commands)
+        #expect(runner.inFlight == .status)
+        #expect(store.state.native)
+        #expect(controller.snapshot.privacyReason == .pending)
+        // Lue éveillée (elle sort de la veille du Mac) : marge, coupure du suivi, −70°, puis le mode natif.
+        runner.answer(.status)
+        scheduler.advance(by: PrivacyReconciler.riseMargin)
+        runner.answer(.tracking(false))
+        let sent = camera.absoluteCommands.dropFirst(commands.count)
+        #expect(!sent.isEmpty && sent.allSatisfy { $0 == Self.down })
+        settle()
+        runner.autoReads = true
+        runner.answer(.privacy(true))
+        scheduler.advance(by: PrivacyReconciler.switchDelay)
+        #expect(controller.snapshot.privacyMode == .native)
+    }
+
+    @Test("Réserve 1, contraste : un rebranchement longtemps après la sortie de veille reste une coupure d'alimentation : −70° tout de suite")
+    func replugLongAfterMacWake() {
+        let controller = ready()
+        enterNative(controller)
+        controller.systemWoke()
+        scheduler.advance(by: PrivacyReconciler.wakeWindow + 1)
+        camera.isPresent = false
+        controller.cameraPresenceChanged(false)
+        runner.powerCycle()
+        camera.isPresent = true
+        controller.cameraPresenceChanged(true)
+        #expect(camera.absoluteCommands == [Self.down, Self.down])
+        #expect(controller.snapshot.privacyReason == .pending)
     }
 }
 
