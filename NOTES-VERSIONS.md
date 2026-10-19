@@ -6,6 +6,24 @@ release and to the update window.
 PTZBot pour Mac. Chaque section a un bloc **English**, puis un bloc **Français** ; les mêmes notes servent à la
 version GitHub et à la fenêtre de mise à jour.
 
+## 1.1.1
+
+**English**
+
+- **Privacy now turns off the camera's image and microphone.** Until now, privacy only turned the lens down; the picture and the sound kept going to HomeKit and to the iPhone app. Now the camera goes into its own privacy mode: the picture is black and the sound is silent, everywhere, while the stream stays connected. When you turn privacy off, the camera wakes up and goes back to where it was by itself.
+- This needs the OBSBOT SDK. Without it, or if the camera does not respond after a second try, privacy falls back to turning the lens down, as before, and says so: a note under the switch in PTZBot, and under the privacy button in the iPhone app, tells you that the picture and the sound are not turned off.
+- The privacy switch now says what it does: "Turns off the camera's image and microphone".
+- Quitting PTZBot does not wake the camera: privacy stays on, and PTZBot applies it again the next time it starts.
+- If the camera cannot leave privacy after two tries, privacy stays on and PTZBot tells you.
+
+**Français**
+
+- **La vie privée coupe désormais l'image et le micro de la caméra.** Jusqu'ici, elle ne faisait que baisser l'objectif : l'image et le son continuaient d'arriver dans HomeKit et dans l'app iPhone. Maintenant la caméra passe dans son propre mode vie privée : l'image est noire et le son muet, partout, alors que le flux reste connecté. Quand vous éteignez la vie privée, la caméra se réveille et reprend toute seule sa position.
+- Cela demande le SDK OBSBOT. Sans lui, ou si la caméra ne répond pas après un second essai, la vie privée revient à baisser l'objectif, comme avant, et le dit : une note sous l'interrupteur dans PTZBot, et sous le bouton de vie privée dans l'app iPhone, précise que l'image et le son ne sont pas coupés.
+- L'interrupteur de vie privée dit maintenant ce qu'il fait : « Coupe l'image et le micro de la caméra ».
+- Quitter PTZBot ne réveille pas la caméra : la vie privée reste active, et PTZBot la réapplique au prochain lancement.
+- Si la caméra n'arrive pas à quitter la vie privée après deux essais, la vie privée reste active et PTZBot vous le dit.
+
 ## 1.1.0
 
 **English**

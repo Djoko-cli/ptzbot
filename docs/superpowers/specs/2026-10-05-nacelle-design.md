@@ -79,7 +79,7 @@ Le protocole utilise des messages JSON, un par trame WebSocket texte, avec un ch
 
 | Message | Champs |
 |---|---|
-| `state` | `camera` : `connected` ou `absent` · `control` : `idle`, `taking`, `ready` ou `failed` · `privacy` : booléen · `pan`, `tilt` : degrés, ou null si inconnus · `zoom` : entier ou null · `moving` : booléen |
+| `state` | `camera` : `connected` ou `absent` · `control` : `idle`, `taking`, `ready` ou `failed` · `privacy` : booléen · `privacyMode` : `native` ou `tilt`, absent hors vie privée et chez un ptzd ancien (§ 6.5 bis) · `pan`, `tilt` : degrés, ou null si inconnus · `zoom` : entier ou null · `moving` : booléen |
 | `error` | `code` : `privacyActive`, `cameraAbsent`, `uvcFailed` ou `badMessage` · `message` : texte lisible |
 
 `ptzd` envoie un `state` complet à chaque nouvelle connexion, puis à chaque changement. Un message inconnu ou mal formé reçoit une réponse `error`/`badMessage` et n'a aucun autre effet.
