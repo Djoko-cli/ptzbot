@@ -226,11 +226,16 @@ struct PanelView: View {
 
     private var cameraSection: some View {
         PanelSection(Labels.cameraSection(model.state?.camera)) {
-            PanelRow(icon: "eye.slash", title: AppText.text("Vie privée")) {
+            PanelRow(icon: "eye.slash", title: AppText.text("Vie privée"), subtitle: Labels.privacySubtitle) {
                 Toggle(AppText.text("Vie privée"), isOn: Binding(get: { model.state?.privacy ?? false }, set: { model.setPrivacy($0) }))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
+            } notes: {
+                // Mode `tilt` : l'objectif est détourné, mais l'image et le micro ne sont pas coupés (spec § 6.5 bis).
+                if let note = Labels.privacyNote(model.state?.privacyMode, needsSDK: aiNeedsSDK) {
+                    PanelNote(note, color: .orange)
+                }
             }
             Divider()
             PanelRow(icon: "person.crop.square", title: AppText.text("Suivi IA")) {

@@ -17,6 +17,11 @@ struct BannerInputs: Equatable {
 enum StatusBanner {
     static let qrRefused = "QR code refusé : relancez l'appairage sur le Mac"
 
+    // Vie privée (spec § 6.5 bis). Le mode `tilt` ne coupe ni l'image ni le micro : le bandeau le dit.
+    static let privacy = "Vie privée"
+    static let privacyNative = "Vie privée : image et micro coupés"
+    static let privacyTilt = "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés."
+
     // Enregistrement (spec enregistrement § 6).
     static let photosDenied = "L'accès à Photos est refusé : autorisez-le dans Réglages › PTZBot › Photos."
     static let lowSpaceAtStart = "Espace insuffisant sur l'iPhone pour enregistrer."
@@ -58,7 +63,12 @@ enum StatusBanner {
                 return "Caméra débranchée"
             }
             if state.privacy {
-                return "Vie privée"
+                // Un ptzd d'avant la vie privée V2 n'envoie pas le mode : le texte d'avant.
+                switch state.privacyMode {
+                case .native: return privacyNative
+                case .tilt: return privacyTilt
+                case nil: return privacy
+                }
             }
             if state.control == .failed {
                 return "Suivi IA non coupé : les mouvements peuvent être contrés"

@@ -114,6 +114,25 @@ struct LocalizationTests {
         #expect(english.allSatisfy { $0.hasPrefix("AI tracking unchanged: ") })
     }
 
+    @Test("Vie privée native : sous-titre, notes du mode tilt et messages d'échec de ptzd, en français et en anglais")
+    func privacyTexts() {
+        #expect(inLanguage("fr") { Labels.privacySubtitle } == "Coupe l'image et le micro de la caméra")
+        #expect(inLanguage("en") { Labels.privacySubtitle } == "Turns off the camera's image and microphone")
+        // Seul le mode tilt a une note ; natif, ptzd ancien et hors vie privée n'en ont pas.
+        #expect(Labels.privacyNote(.native, needsSDK: false) == nil)
+        #expect(Labels.privacyNote(nil, needsSDK: true) == nil)
+        #expect(inLanguage("fr") { Labels.privacyNote(.tilt, needsSDK: true) } == "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.")
+        #expect(inLanguage("en") { Labels.privacyNote(.tilt, needsSDK: true) } == "Without the OBSBOT SDK, privacy only turns the lens away: the image and microphone are not turned off.")
+        // SDK installé mais mode natif échoué : la note du repli, pas « sans le SDK ».
+        #expect(inLanguage("fr") { Labels.privacyNote(.tilt, needsSDK: false) } == PrivacyFailureText.fallbackToTilt)
+        #expect(inLanguage("en") { Labels.privacyNote(.tilt, needsSDK: false) } == "Privacy could not turn off the camera's image or microphone: the lens is only turned away.")
+        // Les deux messages que ptzd envoie en uvcFailed sont traduits ; jamais le texte de ptzd en anglais.
+        #expect(inLanguage("fr") { ErrorTexts.text(for: .uvcFailed, message: PrivacyFailureText.fallbackToTilt) } == PrivacyFailureText.fallbackToTilt)
+        #expect(inLanguage("en") { ErrorTexts.text(for: .uvcFailed, message: PrivacyFailureText.fallbackToTilt) } == "Privacy could not turn off the camera's image or microphone: the lens is only turned away.")
+        #expect(inLanguage("fr") { ErrorTexts.text(for: .uvcFailed, message: PrivacyFailureText.exitFailed) } == PrivacyFailureText.exitFailed)
+        #expect(inLanguage("en") { ErrorTexts.text(for: .uvcFailed, message: PrivacyFailureText.exitFailed) } == "Privacy could not be turned off: the camera did not respond.")
+    }
+
     /// Les clés de `Localization.text("…")` dans les sources de PTZBotKit, chaque interpolation devenue `%lld`
     /// (pour `count`) ou `%@`.
     static func sourceKeys() throws -> Set<String> {

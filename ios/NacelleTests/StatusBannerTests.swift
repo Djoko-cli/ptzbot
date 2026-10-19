@@ -40,6 +40,24 @@ struct StatusBannerTests {
         #expect(text(state()) == nil)
     }
 
+    @Test("Vie privée : le mode dit ce qui est coupé ; sans mode (ptzd ancien), le texte d'avant")
+    func privacyModeTexts() {
+        func privacyState(_ mode: PrivacyMode?) -> StateSnapshot {
+            StateSnapshot(camera: .connected, control: .ready, privacy: true, pan: 0, tilt: 0, zoom: 0, moving: false, privacyMode: mode)
+        }
+        #expect(text(privacyState(nil)) == "Vie privée")
+        #expect(text(privacyState(.native)) == "Vie privée : image et micro coupés")
+        #expect(text(privacyState(.tilt)) == "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.")
+        // Le mode n'a d'effet qu'en vie privée.
+        var off = privacyState(.tilt)
+        off.privacy = false
+        #expect(text(off) == nil)
+        // La caméra débranchée passe avant.
+        var absent = privacyState(.tilt)
+        absent.camera = .absent
+        #expect(text(absent) == "Caméra débranchée")
+    }
+
     @Test("Priorité : injoignable, débranchée, vie privée, suivi IA, connexion")
     func priority() {
         let everything = state(camera: .absent, control: .taking, privacy: true)

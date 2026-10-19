@@ -248,6 +248,7 @@ struct ControlScreen: View {
         .disabled(!model.privacyToggleEnabled)
         .opacity(model.privacyToggleEnabled ? 1 : 0.4)
         .accessibilityLabel(privacyOn ? "Quitter la vie privée" : "Vie privée")
+        .accessibilityHint("Coupe l'image et le micro de la caméra")
     }
 }
 

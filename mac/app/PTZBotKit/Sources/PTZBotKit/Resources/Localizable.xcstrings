@@ -1786,6 +1786,74 @@
         }
       }
     },
+    "Coupe l'image et le micro de la caméra": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turns off the camera's image and microphone"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coupe l'image et le micro de la caméra"
+          }
+        }
+      }
+    },
+    "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Without the OBSBOT SDK, privacy only turns the lens away: the image and microphone are not turned off."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés."
+          }
+        }
+      }
+    },
+    "La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy could not turn off the camera's image or microphone: the lens is only turned away."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné."
+          }
+        }
+      }
+    },
+    "La vie privée n'a pas pu être levée : la caméra n'a pas répondu.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy could not be turned off: the camera did not respond."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La vie privée n'a pas pu être levée : la caméra n'a pas répondu."
+          }
+        }
+      }
+    },
     "Tailscale": {
       "extractionState": "manual",
       "localizations": {

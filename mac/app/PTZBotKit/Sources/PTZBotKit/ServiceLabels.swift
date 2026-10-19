@@ -164,6 +164,23 @@ extension Labels {
         return tracking == .unknown ? Localization.text("État inconnu") : nil
     }
 
+    /// La petite ligne sous « Vie privée » : ce que la vie privée coupe (spec § 6.5 bis).
+    public static var privacySubtitle: String { Localization.text("Coupe l'image et le micro de la caméra") }
+
+    /// Le repli de ptzd : le SDK est là, mais le mode natif de la caméra a échoué (le message qui accompagne le repli).
+    public static var privacyFallbackNote: String {
+        Localization.text("La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné.")
+    }
+
+    /// La note sous « Vie privée » quand elle ne tient que par l'inclinaison de l'objectif (mode `tilt`, spec § 6.5 bis) :
+    /// sans le SDK, ou parce que le mode natif a échoué. Nil dans les autres cas, ptzd ancien compris.
+    public static func privacyNote(_ mode: PrivacyMode?, needsSDK: Bool) -> String? {
+        guard mode == .tilt else { return nil }
+        return needsSDK
+            ? Localization.text("Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.")
+            : privacyFallbackNote
+    }
+
     /// Le suivi IA a besoin du SDK de l'app et d'un obsbot-ai qui le charge ; l'ancienne installation a le sien
     /// dans `lib/`.
     public static func aiNeedsSDK(_ status: SDKStatus?, legacy: Bool) -> Bool {
