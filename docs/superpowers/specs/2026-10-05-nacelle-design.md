@@ -134,6 +134,30 @@ L'état réel du suivi IA ne se lit pas : le SDK renvoie toujours 0. La coupure 
   2. `obsbot-ai-off` est lancé, car un redémarrage de la caméra peut avoir rallumé le suivi.
 - **Relecture** : après l'entrée, la sortie ou une réapplication, la position n'est relue qu'au bout de 2 s ; relue plus tôt, la caméra renvoie une valeur fausse.
 
+#### 6.5 bis Vie privée V2 : le mode natif de l'OBSBOT (19/10/2026)
+
+Amendement du § 6.5, demandé par Djoko : la vie privée doit aussi couper le **micro** de la caméra, que go2rtc diffuse vers HomeKit et l'app iOS.
+
+- **Essais du 19/10**, son mesuré à la sortie de go2rtc :
+  - le muet et le volume d'entrée de macOS (CoreAudio) sont acceptés et relus, mais le micro les ignore : le niveau ne bouge pas (environ −31 dB) ;
+  - le **mode vie privée natif de l'OBSBOT** (SDK : `cameraSetMicrophoneDuringSleepU(0)`, puis `cameraSetDevRunStatusR(DevStatusPrivacy)`) retourne l'objectif à 90°, rend une **image noire** et un **silence total** (−91 dB). Le flux continue à 25 images par seconde : go2rtc ne voit ni erreur ni relance, sur 20 minutes d'essai. L'état tient sans programme du SDK actif ;
+  - le réveil (`cameraSetDevRunStatusR(DevStatusRun)`) rend l'image et le son, et la caméra reprend **d'elle-même** sa dernière position.
+- **Deux modes de vie privée**, retenus dans `state.json` (`mode` : `native` ou `tilt`) et publiés dans l'état (champ `privacyMode`, absent chez un ptzd ancien) :
+  - **`native`** : le mode de l'OBSBOT, par `obsbot-ai` (ordres `privacy on` et `privacy off`, en mode ponctuel et en mode service). Il faut le SDK installé ;
+  - **`tilt`** : le repli d'aujourd'hui, objectif incliné à −70°, sans coupure de l'image ni du micro.
+- **Entrée** :
+  1. arrêt du mouvement, prise de la main sur le suivi IA, lecture et enregistrement de la position et du zoom, comme au § 6.5 ;
+  2. avec le SDK : `privacy on`. En cas d'échec, **un second essai automatique, dans les 10 s**. S'il échoue aussi, **repli sur `tilt`**, avec un avertissement : « La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné. » ;
+  3. sans le SDK : `tilt` directement.
+- **Sortie** :
+  - `native` : `privacy off`, avec un second essai dans les 10 s en cas d'échec. La caméra reprend seule sa position ; ptzd relit la position après le délai habituel. Si les deux essais échouent, la vie privée reste active et l'erreur est montrée ;
+  - `tilt` : comme au § 6.5 (zoom, puis position mémorisée).
+- **Réapplication** (démarrage de ptzd, rebranchement, fin de la coupure du suivi IA) : le mode retenu est réappliqué ; `native` suit les mêmes règles que l'entrée (second essai, puis repli sur `tilt` avec avertissement). Un mode `tilt` subi par repli retente le mode natif à la réapplication, si le SDK est là.
+- **Vérification de position** (§ 6.5, « Relecture », et renvois de l'ordre) : seulement en mode `tilt`. En mode `native`, la caméra gère elle-même sa position.
+- **Pendant** : `move`, `zoom` et le suivi IA restent refusés (`privacyActive`).
+- **Interfaces** (Mac et iOS, textes au vouvoiement, en anglais et en français) : la vie privée « coupe l'image et le micro de la caméra ». En mode `tilt`, une note visible : « Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés. » (ou l'avertissement de repli ci-dessus).
+- **Quitter PTZBot** ne réveille pas la caméra : la vie privée native tient sans l'app, et sera réappliquée au prochain lancement.
+
 ### 6.6 Erreurs
 
 | Situation | Comportement |
