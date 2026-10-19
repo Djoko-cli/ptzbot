@@ -87,8 +87,11 @@ public enum PrivacyMode: String, Codable, Sendable {
 }
 
 /// Pourquoi la vie privée ne tient que par l'inclinaison (`privacyMode` `tilt`, spec § 6.5 bis). Absente pendant que le
-/// mode natif est en cours.
+/// mode natif est en cours, l'objectif déjà vu à −70°.
 public enum PrivacyReason: String, Codable, Sendable {
+    /// Protection en cours : l'objectif n'a pas encore été vu à −70°, et le mode natif n'est pas lu (rebranchement,
+    /// démarrage, réveil de la caméra par un autre moyen). Un client d'avant cette raison la lit nil.
+    case pending
     /// Pas d'obsbot-ai (SDK absent) : la vie privée n'a que l'inclinaison.
     case noSDK
     /// obsbot-ai est d'avant la vie privée V2 (« ordre inconnu ») : PTZBot doit le recompiler.
@@ -154,13 +157,18 @@ public enum AIFailureText {
     }
 }
 
-/// Les deux messages `uvcFailed` de la vie privée native (spec § 6.5 bis). ptzd les envoie tels quels ; les apps les
+/// Les messages `uvcFailed` de la vie privée native (spec § 6.5 bis). ptzd les envoie tels quels ; les apps les
 /// reconnaissent par ces textes partagés pour montrer leur propre traduction (comme `AIFailureText`).
 public enum PrivacyFailureText {
     /// Repli sur l'inclinaison : l'image et le micro ne sont pas coupés.
     public static let fallbackToTilt = "La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné."
-    /// La caméra ne s'est pas réveillée (ou son état ne se lit pas) après deux essais : la vie privée reste active.
-    public static let exitFailed = "La vie privée n'a pas pu être levée : la caméra n'a pas répondu."
+    /// Sortie : la caméra est restée en vie privée après deux essais. La vie privée reste active.
+    public static let exitFailed = "La vie privée n'a pas pu être levée : la caméra est restée en mode vie privée."
+    /// Sortie : ni l'état de la caméra ni l'inclinaison de sa nacelle ne se lisent, le réveil n'est pas confirmé. La vie
+    /// privée reste active.
+    public static let exitUnreadable = "La vie privée n'a pas pu être levée : l'état de la caméra ne se lit pas."
+    /// Sortie : obsbot-ai est d'avant la vie privée V2 et ne sait pas réveiller la caméra. La vie privée reste active.
+    public static let exitNeedsUpdate = "La vie privée n'a pas pu être levée : obsbot-ai n'est pas à jour."
 }
 
 /// État complet publié par ptzd.

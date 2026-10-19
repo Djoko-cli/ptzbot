@@ -165,11 +165,15 @@ extension Labels {
     }
 
     /// La petite ligne sous « Vie privée » (spec § 6.5 bis). En vie privée, ce qui tient vraiment : « Image et micro
-    /// coupés » seulement quand ptzd a constaté le mode natif, « Objectif détourné » sinon (mode natif en cours ou
+    /// coupés » seulement quand ptzd a constaté le mode natif, « Protection en cours » tant que l'objectif n'a pas été vu
+    /// à −70° (rebranchement, démarrage, réveil de la caméra), « Objectif détourné » sinon (mode natif en cours ou
     /// impossible, ptzd ancien). Hors vie privée, ce qu'elle fera : couper l'image et le micro seulement si le SDK est prêt.
-    public static func privacySubtitle(active: Bool, mode: PrivacyMode?, sdkReady: Bool) -> String {
+    public static func privacySubtitle(active: Bool, mode: PrivacyMode?, reason: PrivacyReason? = nil, sdkReady: Bool) -> String {
         if active {
-            return mode == .native ? Localization.text("Image et micro coupés") : Localization.text("Objectif détourné")
+            if mode == .native {
+                return Localization.text("Image et micro coupés")
+            }
+            return reason == .pending ? Localization.text("Protection en cours") : Localization.text("Objectif détourné")
         }
         return sdkReady
             ? Localization.text("Coupe l'image et le micro de la caméra")
@@ -183,10 +187,13 @@ extension Labels {
 
     /// La note sous « Vie privée » quand elle ne tient que par l'inclinaison de l'objectif (mode `tilt`), selon la raison
     /// donnée par ptzd. Pour un obsbot-ai à recompiler, l'état du SDK dit ce qui bloque et quoi faire. Nil en mode natif,
-    /// pendant que le mode natif est en cours (pas de raison), et chez un ptzd ancien.
+    /// pendant que le mode natif est en cours (pas de raison), pendant la protection en cours (le sous-titre le dit), et
+    /// chez un ptzd ancien.
     public static func privacyNote(mode: PrivacyMode?, reason: PrivacyReason?, sdk: SDKStatus?) -> String? {
         guard mode == .tilt, let reason else { return nil }
         switch reason {
+        case .pending:
+            return nil
         case .noSDK:
             return Localization.text("Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.")
         case .failed:

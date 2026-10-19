@@ -4,7 +4,7 @@ import NacelleProtocol
 /// Les refus de ptzd, traduits d'après leur code (spec distribution § 7.2) : l'app ne montre plus le texte
 /// français envoyé par ptzd, qui reste celui du journal et de la ligne de commande.
 public enum ErrorTexts {
-    /// Le texte montré pour un refus de ptzd. Pour `uvcFailed`, le motif connu du suivi IA, ou l'un des deux messages de la vie privée native, est repris de `message`.
+    /// Le texte montré pour un refus de ptzd. Pour `uvcFailed`, le motif connu du suivi IA, ou l'un des messages de la vie privée native, est repris de `message`.
     public static func text(for code: ErrorCode, message: String) -> String {
         switch code {
         case .privacyActive:
@@ -16,7 +16,11 @@ public enum ErrorTexts {
             case PrivacyFailureText.fallbackToTilt:
                 Labels.privacyFallbackNote
             case PrivacyFailureText.exitFailed:
-                Localization.text("La vie privée n'a pas pu être levée : la caméra n'a pas répondu.")
+                Localization.text("La vie privée n'a pas pu être levée : la caméra est restée en mode vie privée.")
+            case PrivacyFailureText.exitUnreadable:
+                Localization.text("La vie privée n'a pas pu être levée : l'état de la caméra ne se lit pas.")
+            case PrivacyFailureText.exitNeedsUpdate:
+                Localization.text("La vie privée n'a pas pu être levée : obsbot-ai n'est pas à jour.")
             default:
                 aiMotive(in: message).map(aiText) ?? Localization.text("La caméra a refusé la commande.")
             }

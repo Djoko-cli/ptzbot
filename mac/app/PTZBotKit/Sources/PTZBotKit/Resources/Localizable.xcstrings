@@ -908,7 +908,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "obsbot-ai could not be compiled: the previous SDK is kept. Details are in the obsbot-ai-compilation.log log."
+            "value": "obsbot-ai could not be compiled: the previous SDK is kept. Details are in obsbot-ai-compilation.log."
           }
         },
         "fr": {
@@ -1044,7 +1044,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Details are in the obsbot-ai-compilation.log log."
+            "value": "Details are in obsbot-ai-compilation.log."
           }
         },
         "fr": {
@@ -1837,19 +1837,70 @@
         }
       }
     },
-    "La vie privée n'a pas pu être levée : la caméra n'a pas répondu.": {
+    "La vie privée n'a pas pu être levée : la caméra est restée en mode vie privée.": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Privacy could not be turned off: the camera did not respond."
+            "value": "Privacy could not be turned off: the camera stayed in privacy mode."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "La vie privée n'a pas pu être levée : la caméra n'a pas répondu."
+            "value": "La vie privée n'a pas pu être levée : la caméra est restée en mode vie privée."
+          }
+        }
+      }
+    },
+    "La vie privée n'a pas pu être levée : l'état de la caméra ne se lit pas.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy could not be turned off: the camera's state cannot be read."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La vie privée n'a pas pu être levée : l'état de la caméra ne se lit pas."
+          }
+        }
+      }
+    },
+    "La vie privée n'a pas pu être levée : obsbot-ai n'est pas à jour.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy could not be turned off: obsbot-ai is out of date."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La vie privée n'a pas pu être levée : obsbot-ai n'est pas à jour."
+          }
+        }
+      }
+    },
+    "Protection en cours": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protection in progress"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protection en cours"
           }
         }
       }
@@ -1928,7 +1979,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "obsbot-ai could not be recompiled: privacy only turns the lens away. Details are in the obsbot-ai-compilation.log log."
+            "value": "obsbot-ai could not be recompiled: privacy only turns the lens away. Details are in obsbot-ai-compilation.log."
           }
         },
         "fr": {

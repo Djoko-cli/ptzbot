@@ -42,7 +42,7 @@ struct PanelView: View {
     private var privacySubtitle: String {
         let state = model.state
         return Labels.privacySubtitle(active: state?.privacy ?? false, mode: state?.privacyMode,
-                                      sdkReady: !legacy && app.sdkStatus == .ready)
+                                      reason: state?.privacyReason, sdkReady: !legacy && app.sdkStatus == .ready)
     }
 
     /// Le lien vers l'onglet « SDK OBSBOT » : pas quand l'état n'est pas encore lu, ni pendant la recompilation.

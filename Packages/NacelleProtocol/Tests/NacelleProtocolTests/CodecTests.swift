@@ -224,7 +224,7 @@ struct ServerMessageTests {
         #expect(decoded == expected)
     }
 
-    @Test("privacyReason : écrite et relue avec le mode tilt (spec § 6.5 bis)", arguments: [PrivacyReason.noSDK, .updating, .failed])
+    @Test("privacyReason : écrite et relue avec le mode tilt (spec § 6.5 bis)", arguments: [PrivacyReason.pending, .noSDK, .updating, .failed])
     func privacyReasonPresent(reason: PrivacyReason) throws {
         var snapshot = Self.known
         snapshot.privacy = true

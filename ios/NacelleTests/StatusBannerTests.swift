@@ -50,6 +50,8 @@ struct StatusBannerTests {
         #expect(text(privacyState(.native)) == "Vie privée : image et micro coupés")
         // Mode natif en cours, pas encore constaté.
         #expect(text(privacyState(.tilt)) == "Vie privée : objectif détourné")
+        // Objectif pas encore vu détourné (rebranchement, démarrage) : ni « détourné », ni « coupés ».
+        #expect(text(privacyState(.tilt, .pending)) == "Vie privée : protection en cours")
         #expect(text(privacyState(.tilt, .noSDK)) == "Vie privée : objectif seulement détourné. Sans le SDK OBSBOT sur le Mac, l'image et le micro ne sont pas coupés.")
         #expect(text(privacyState(.tilt, .updating)) == "Vie privée : objectif seulement détourné, en attendant la mise à jour du SDK OBSBOT sur le Mac.")
         // Repli avec le SDK présent : jamais « Sans le SDK » (relecture, M6).

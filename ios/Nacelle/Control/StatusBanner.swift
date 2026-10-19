@@ -17,10 +17,13 @@ struct BannerInputs: Equatable {
 enum StatusBanner {
     static let qrRefused = "QR code refusé : relancez l'appairage sur le Mac"
 
-    // Vie privée (spec § 6.5 bis). « Image et micro coupés » seulement quand ptzd a constaté le mode natif ; sinon
+    // Vie privée (spec § 6.5 bis). « Image et micro coupés » seulement quand ptzd a constaté le mode natif ; « protection
+    // en cours » tant que l'objectif n'a pas été vu détourné (rebranchement, démarrage, réveil de la caméra) ; sinon
     // l'objectif est seulement détourné, et la raison donnée par ptzd dit pourquoi.
     static let privacy = "Vie privée"
     static let privacyNative = "Vie privée : image et micro coupés"
+    /// L'objectif n'a pas encore été vu à −70°, et le mode natif n'est pas lu.
+    static let privacyPending = "Vie privée : protection en cours"
     /// Mode natif en cours, pas encore constaté.
     static let privacyTilt = "Vie privée : objectif détourné"
     static let privacyNoSDK = "Vie privée : objectif seulement détourné. Sans le SDK OBSBOT sur le Mac, l'image et le micro ne sont pas coupés."
@@ -35,6 +38,7 @@ enum StatusBanner {
         case .tilt:
             switch reason {
             case nil: privacyTilt
+            case .pending: privacyPending
             case .noSDK: privacyNoSDK
             case .updating: privacyUpdating
             case .failed: privacyFailed
