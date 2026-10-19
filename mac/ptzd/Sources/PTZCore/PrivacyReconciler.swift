@@ -157,6 +157,9 @@ public final class PrivacyReconciler {
     private var rising: SettleKind?
     /// Branchement avec une caméra peut-être en mode natif : si la première lecture la trouve éveillée, elle a redémarré.
     private var booting = false
+    /// Entrée : la caméra vient de se stabiliser après un réveil ou un redémarrage ; son état est relu avant le premier
+    /// ordre de position (une lecture faite pendant sa bascule a pu la dire éveillée trop tôt).
+    private var confirmAwake = false
     /// Au branchement en mode natif possible, la coupure du suivi IA attend que la caméra soit vue éveillée : une
     /// coupure pendant le mode natif pourrait la réveiller (essai de banc 3).
     private var pendingTake = false
@@ -250,6 +253,7 @@ public final class PrivacyReconciler {
         awake = false
         rising = nil
         booting = false
+        confirmAwake = false
         attempts = 0
         readFailures = 0
         gaveUp = false
@@ -331,6 +335,7 @@ public final class PrivacyReconciler {
         isActive = true
         tilt = .none
         rising = nil
+        confirmAwake = false
         readFailures = 0
         if !runner.supportsNativePrivacy {
             // Sans utilitaire, la caméra ne peut pas être en mode natif par ptzd.
@@ -439,6 +444,13 @@ public final class PrivacyReconciler {
         if let rising {
             // Elle vient peut-être d'en sortir, ou de redémarrer : qu'elle soit stable d'abord (un seul pilote).
             startSettle(rising)
+            return
+        }
+        if confirmAwake {
+            // Stable : son état est relu une fois avant tout ordre de position. Lue en vie privée, elle y est entrée
+            // après la lecture précédente, et rien ne part.
+            confirmAwake = false
+            issue(.status)
             return
         }
         if updating || gaveUp {
@@ -761,6 +773,7 @@ public final class PrivacyReconciler {
             zoom.refresh()
             // Revenue à −70° (sa position en entrant en mode natif) : l'inclinaison est déjà en place.
             tilt = onTarget ? .placed : .none
+            confirmAwake = wanted && runner.supportsNativePrivacy && !updating
         }
         reconcile()
     }

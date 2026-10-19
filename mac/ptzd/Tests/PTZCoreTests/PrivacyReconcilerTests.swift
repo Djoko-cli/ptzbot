@@ -207,8 +207,10 @@ struct PrivacyReconcilerTests {
         runner.answer(.status)
         #expect(controller.snapshot.privacyMode == .tilt)
         let failedAt = scheduler.now
-        // Elle pouvait être en mode natif : on attend qu'elle soit stable avant tout ordre de position.
+        // Elle pouvait être en mode natif : on attend qu'elle soit stable, puis son état est relu, avant tout ordre de
+        // position.
         settle()
+        runner.answer(.status)
         #expect(runner.inFlight == .privacy(true))
         #expect(scheduler.now - failedAt < 10)
         #expect(runner.privacyOrders == [true, true])
@@ -227,6 +229,7 @@ struct PrivacyReconcilerTests {
         runner.answer(.privacy(true), .sdkError)
         runner.answer(.status)
         settle()
+        runner.answer(.status)
         runner.answer(.privacy(true), .sdkError)
         // Le second essai a fait bouger la caméra.
         camera.position = PanTiltPosition(pan: 12, tilt: 10)
@@ -243,6 +246,8 @@ struct PrivacyReconcilerTests {
         #expect(camera.absoluteCommands == [Self.down])
         camera.ignoreAbsoluteCommands = 1
         scheduler.advance(by: PrivacyReconciler.riseWaitLimit)
+        #expect(camera.absoluteCommands == [Self.down])
+        runner.answer(.status)
         #expect(camera.absoluteCommands == [Self.down, Self.down])
         scheduler.advance(by: PrivacyReconciler.settleDelay)
         #expect(camera.absoluteCommands == [Self.down, Self.down, Self.down])
@@ -250,6 +255,28 @@ struct PrivacyReconcilerTests {
         #expect(controller.snapshot.tilt == PrivacyReconciler.privacyTilt)
         #expect(runner.privacyOrders == [true, true])
         #expect(scheduler.pendingCount == 0)
+    }
+
+    @Test("État en retard sur la bascule (lu run juste après privacy on) : aucun ordre de position, la relecture avant l'inclinaison constate le mode natif")
+    func lateStatusDuringSwitch() {
+        let controller = ready()
+        _ = controller.handle(.privacy(on: true), from: 1)
+        settle()
+        // L'ordre a pris, mais la lecture qui suit arrive avant la fin de la bascule.
+        runner.answer(.privacy(true))
+        runner.state = .run
+        runner.answer(.status)
+        // La caméra part vers sa pose de vie privée (90°) : pas stable près de −70°, aucun ordre de position.
+        runner.state = .privacy
+        camera.position = PanTiltPosition(pan: 12, tilt: 90)
+        scheduler.advance(by: PrivacyReconciler.riseWaitLimit)
+        #expect(camera.absoluteCommands == [Self.down])
+        #expect(runner.inFlight == .status)
+        runner.answer(.status)
+        #expect(controller.snapshot.privacyMode == .native)
+        scheduler.advance(by: 60)
+        #expect(camera.absoluteCommands == [Self.down])
+        #expect(runner.privacyOrders == [true])
     }
 
     @Test("Réponse perdue alors que la caméra a basculé : la lecture constate le mode natif, pas de second essai")
@@ -441,8 +468,11 @@ struct PrivacyReconcilerTests {
         #expect(runner.inFlight == .tracking(false))
         #expect(camera.absoluteCommands.isEmpty)
         settle()
-        #expect(camera.absoluteCommands == [Self.down])
+        // Stable : son état est relu (derrière la coupure du suivi) avant le premier ordre de position.
+        #expect(camera.absoluteCommands.isEmpty)
         runner.answer(.tracking(false))
+        runner.answer(.status)
+        #expect(camera.absoluteCommands == [Self.down])
         settle()
         runner.answer(.privacy(true))
         runner.answer(.status)
@@ -563,9 +593,11 @@ struct PrivacyReconcilerTests {
         runner.answer(.privacy(true), .sdkError)
         runner.answer(.status)
         settle()
+        runner.answer(.status)
         runner.answer(.privacy(true), .sdkError)
         runner.answer(.status)
         settle()
+        runner.answer(.status)
         #expect(controller.snapshot.privacyReason == .failed)
         _ = controller.handle(.privacy(on: false), from: 1)
         #expect(runner.inFlight == .privacy(false))
@@ -588,6 +620,7 @@ struct PrivacyReconcilerTests {
         #expect(controller.handle(.privacy(on: true), from: 2) == nil)
         camera.position = Self.down
         settle()
+        runner.answer(.status)
         #expect(runner.inFlight == .privacy(true))
         runner.answer(.privacy(true))
         runner.answer(.status)
@@ -659,6 +692,7 @@ struct PrivacyReconcilerTests {
         runner.answer(.status)
         #expect(controller.snapshot.privacyMode == .tilt)
         settle()
+        runner.answer(.status)
         #expect(runner.inFlight == .privacy(true))
         runner.answer(.privacy(true))
         runner.answer(.status)
@@ -679,6 +713,7 @@ struct PrivacyReconcilerTests {
         runner.answer(.privacy(true), .sdkError)
         runner.answer(.status)
         settle()
+        runner.answer(.status)
         runner.answer(.privacy(true))
         runner.answer(.status)
         #expect(controller.snapshot.privacyMode == .native)
