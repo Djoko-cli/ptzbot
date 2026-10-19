@@ -51,6 +51,8 @@ public final class AIOrderQueue: AIRunner {
 
     public var isReady: Bool { runner.isReady }
 
+    public var keepsWarm: Bool { runner.keepsWarm }
+
     public func prewarm() {
         runner.prewarm()
     }

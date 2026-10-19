@@ -76,7 +76,10 @@ public protocol AIRunner: AnyObject {
     /// Le SDK est prêt : l'utilitaire tourne et sa session a trouvé la caméra (« ready »). Un ordre part alors en
     /// quelques millisecondes ; sinon il attend une session neuve, environ 4 s (spec § 6.5 bis, « Accélération »).
     var isReady: Bool { get }
-    /// Un client pilote : l'utilitaire peut se préparer pour que le prochain ordre parte vite.
+    /// L'utilitaire reste chargé tant que ptzd tourne (ptzd lancé avec le SDK, spec § 6.9) : il n'est plus arrêté pour
+    /// inactivité, et ptzd le prépare dès le démarrage, au branchement de la caméra et après une mise à jour.
+    var keepsWarm: Bool { get }
+    /// L'utilitaire peut se préparer pour que le prochain ordre parte vite (un client pilote, ou ptzd le garde chaud).
     func prewarm()
     /// La caméra a été branchée ou débranchée, ou obsbot-ai a été recompilé : l'utilitaire garde une session du SDK
     /// (ou un programme) qui ne vaut plus. L'ordre en cours échoue.
@@ -94,4 +97,5 @@ extension AIRunner {
     }
     public var supportsNativePrivacy: Bool { false }
     public var isReady: Bool { false }
+    public var keepsWarm: Bool { false }
 }

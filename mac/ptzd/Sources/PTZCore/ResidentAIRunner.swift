@@ -1,7 +1,9 @@
 import Foundation
 
-/// Garde `obsbot-ai serve` lancé pendant qu'un client pilote : le SDK n'est chargé qu'une fois, et un ordre
-/// part en quelques millisecondes au lieu de 4 s. L'utilitaire s'arrête après `idleDelay` sans activité.
+/// Garde `obsbot-ai serve` lancé : le SDK n'est chargé qu'une fois, et un ordre part en quelques millisecondes au lieu
+/// de 4 s. Par défaut, l'utilitaire s'arrête après `idleDelay` sans activité ; avec `keepWarm` (ptzd lancé avec le SDK,
+/// spec § 6.9), il reste chargé tant que ptzd tourne et n'est arrêté que par une réinitialisation, une mise à jour ou un
+/// incident, après quoi ptzd le relance (`prewarm`).
 ///
 /// Protocole : un ordre par ligne (`on`, `off`, `privacy on`, `privacy off` ou `privacy status`) sur l'entrée de
 /// l'utilitaire. Sur sa sortie, les lignes préfixées par `obsbot-ai: ` sont des réponses (`ready` une fois le SDK prêt,
@@ -65,6 +67,7 @@ public final class ResidentAIRunner: AIRunner {
     private let environment: [String: String]
     private let scheduler: any Scheduler
     private let idleDelay: TimeInterval
+    private let keepWarm: Bool
     private let readyTimeout: TimeInterval
     private let orderTimeout: TimeInterval
     /// Les ordres de la vie privée native rendent la main tout de suite (0 ms mesuré le 19/10 : la caméra bascule
@@ -103,6 +106,7 @@ public final class ResidentAIRunner: AIRunner {
         environment: [String: String] = [:],
         scheduler: any Scheduler,
         idleDelay: TimeInterval = 600,
+        keepWarm: Bool = false,
         readyTimeout: TimeInterval = 25,
         orderTimeout: TimeInterval = 5,
         privacyOrderTimeout: TimeInterval = 5,
@@ -113,6 +117,7 @@ public final class ResidentAIRunner: AIRunner {
         self.environment = environment
         self.scheduler = scheduler
         self.idleDelay = idleDelay
+        self.keepWarm = keepWarm
         self.readyTimeout = readyTimeout
         self.orderTimeout = orderTimeout
         self.privacyOrderTimeout = privacyOrderTimeout
@@ -176,6 +181,11 @@ public final class ResidentAIRunner: AIRunner {
     /// Sans l'utilitaire installé (pas de SDK), la vie privée native n'existe pas (spec § 6.5 bis).
     public var supportsNativePrivacy: Bool {
         FileManager.default.isExecutableFile(atPath: executableURL.path)
+    }
+
+    /// L'utilitaire n'est jamais arrêté pour inactivité (`keepWarm`).
+    public var keepsWarm: Bool {
+        keepWarm
     }
 
     /// Le SDK est prêt : un utilitaire en service a dit « ready ». Un ordre part alors en quelques millisecondes.
@@ -503,6 +513,8 @@ public final class ResidentAIRunner: AIRunner {
     }
 
     private func restartIdleTimer() {
+        // Gardé chaud : aucune échéance d'inactivité, l'utilitaire vit autant que ptzd.
+        guard !keepWarm else { return }
         let now = scheduler.now
         if idleTimer != nil, let last = lastIdleRearm, now - last < Self.rearmInterval {
             return

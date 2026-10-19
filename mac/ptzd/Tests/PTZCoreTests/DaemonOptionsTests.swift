@@ -4,6 +4,13 @@ import Testing
 
 @Suite("Options du service (--parent, --ai, --sdk)")
 struct DaemonOptionsTests {
+    @Test("--ai : l'utilitaire est gardé chaud ; sans --ai (ligne de commande), il s'arrête après son délai d'inactivité")
+    func keepsAIWarm() throws {
+        #expect(try DaemonOptions.parse(["--ai", "/app/Helpers/obsbot-ai"]).keepsAIWarm)
+        #expect(try !DaemonOptions.parse(["--parent", "4242"]).keepsAIWarm)
+        #expect(!DaemonOptions().keepsAIWarm)
+    }
+
     @Test("Sans option : fonctionnement en ligne de commande inchangé")
     func absent() throws {
         let options = try DaemonOptions.parse([])

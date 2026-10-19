@@ -73,6 +73,7 @@ struct ResidentAIRunnerTests {
         scheduler: any Scheduler,
         environment: [String: String] = [:],
         idleDelay: TimeInterval = 600,
+        keepWarm: Bool = false,
         readyTimeout: TimeInterval = 25,
         orderTimeout: TimeInterval = 5
     ) -> ResidentAIRunner {
@@ -82,6 +83,7 @@ struct ResidentAIRunnerTests {
             environment: environment,
             scheduler: scheduler,
             idleDelay: idleDelay,
+            keepWarm: keepWarm,
             readyTimeout: readyTimeout,
             orderTimeout: orderTimeout
         )
@@ -351,6 +353,45 @@ struct ResidentAIRunnerTests {
         #expect(await order(runner) == .success)
         #expect(serve.starts.count == 2)
         await cleanUp(runner, serve)
+    }
+
+    @Test("Toujours chaud : l'utilitaire prêt sans aucun ordre, et jamais arrêté pour inactivité, même des heures après")
+    func keepWarmNeverIdles() async throws {
+        let serve = try FakeServe(answering)
+        let scheduler = FakeScheduler()
+        let runner = runner(serve, scheduler: scheduler, idleDelay: 600, keepWarm: true)
+        #expect(runner.keepsWarm)
+        runner.prewarm()
+        #expect(await eventually { runner.isReady })
+        #expect(serve.orders.isEmpty)
+        let first = try #require(serve.starts.first)
+        // Bien au-delà du délai d'inactivité habituel : toujours là, toujours prêt.
+        scheduler.advance(by: 601)
+        scheduler.advance(by: 3 * 3600)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(serve.isAlive(first))
+        #expect(runner.isReady)
+        #expect(serve.lines("exits").isEmpty)
+        // Le premier ordre part tout de suite, sur le même processus.
+        #expect(await order(runner) == .success)
+        #expect(serve.starts == [first])
+        scheduler.advance(by: 3 * 3600)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(serve.isAlive(first))
+        await cleanUp(runner, serve)
+    }
+
+    @Test("Toujours chaud : après une réinitialisation, prewarm relance l'utilitaire ; par défaut, il n'est pas gardé chaud")
+    func keepWarmRestartsAfterReset() async throws {
+        let serve = try FakeServe(answering)
+        let runner = runner(serve, scheduler: FakeScheduler(), keepWarm: true)
+        runner.prewarm()
+        #expect(await eventually { runner.isReady })
+        runner.reset()
+        runner.prewarm()
+        #expect(await eventually { runner.isReady && serve.starts.count == 2 })
+        await cleanUp(runner, serve)
+        #expect(!ResidentAIRunner(executableURL: serve.executableURL, scheduler: FakeScheduler()).keepsWarm)
     }
 
     @Test("Ordre donné pendant l'arrêt pour inactivité : il attend la fin de l'ancien utilitaire, puis aboutit")

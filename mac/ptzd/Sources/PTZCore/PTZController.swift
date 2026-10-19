@@ -13,6 +13,9 @@ public final class PTZController {
     public static let maxResends = PrivacyReconciler.maxResends
     /// Protection par l'inclinaison : délais avant chaque nouvelle vérification après un renvoi.
     public static let privacyBackoff = PrivacyReconciler.privacyBackoff
+    /// Utilitaire gardé chaud : vérifié à cet intervalle, il est relancé s'il est mort seul (incident, SIGKILL). Sans effet
+    /// pendant la minute que le lanceur laisse après un utilitaire mort sans avoir servi.
+    public static let warmCheckInterval: TimeInterval = 60
 
     public private(set) var snapshot: StateSnapshot
     /// Appelé à chaque changement d'état, pour diffusion à tous les clients.
@@ -21,6 +24,9 @@ public final class PTZController {
     public var onClientError: ((ClientID, ErrorCode, String) -> Void)?
 
     private let camera: any CameraDevice
+    private let scheduler: any Scheduler
+    /// L'utilitaire obsbot-ai (par la file des ordres), à tenir chaud quand ptzd dispose du SDK.
+    private let ai: any AIRunner
     private let motion: MotionDriver
     private let zoom: ZoomDriver
     /// La vie privée : état voulu, état constaté et réconciliateur (spec § 6.5 bis).
@@ -30,6 +36,7 @@ public final class PTZController {
     private var lastControl: ControlState = .idle
     /// Retour audio de talkd, lu par `TalkbackWatcher` (spec parler § 5).
     private var talkback: TalkbackAvailability = .unavailable
+    private var warmCheck: (any Cancellable)?
 
     public init(
         camera: any CameraDevice,
@@ -41,10 +48,12 @@ public final class PTZController {
         log: @escaping LogSink
     ) {
         self.camera = camera
+        self.scheduler = scheduler
         self.log = log
         // L'utilitaire ne traite qu'un ordre à la fois : la coupure du suivi IA et la vie privée native passent par la
         // même file, l'une après l'autre (spec § 6.5 bis).
         let queue = AIOrderQueue(runner: ai)
+        self.ai = queue
         let motion = MotionDriver(camera: camera, scheduler: scheduler, settings: settings, log: log)
         let zoom = ZoomDriver(camera: camera, scheduler: scheduler, log: log)
         let control = ControlTaker(runner: queue, scheduler: scheduler, isObsbotCenterRunning: isObsbotCenterRunning, log: log)
@@ -86,14 +95,33 @@ public final class PTZController {
 
     /// Un iPhone vient de s'authentifier : prépare l'utilitaire du suivi IA avant son premier ordre.
     public func prewarmAI() {
-        // Caméra absente ou vie privée : aucun ordre de suivi n'est possible, inutile de charger le SDK.
-        guard camera.isPresent, !privacy.isActive else { return }
+        // Caméra absente : rien à piloter. Vie privée : aucun ordre de suivi n'est possible, inutile de charger le SDK,
+        // sauf si l'utilitaire est gardé chaud (il relit alors l'état réel de la caméra).
+        guard camera.isPresent, ai.keepsWarm || !privacy.isActive else { return }
         control.prewarm()
+    }
+
+    /// Utilitaire toujours chaud (ptzd lancé avec le SDK, spec § 6.9) : préparé dès que la caméra est là (démarrage de
+    /// ptzd, branchement, mise à jour d'obsbot-ai, connexion d'un client), puis vérifié toutes les `warmCheckInterval`
+    /// secondes. Ainsi toute entrée en vie privée prend le chemin rapide. Sans effet quand l'utilitaire n'est pas gardé
+    /// chaud ou n'est pas installé ; sans caméra, rien n'est lancé (il ne trouverait rien).
+    private func keepAIWarm() {
+        guard ai.keepsWarm, ai.supportsNativePrivacy else { return }
+        if camera.isPresent {
+            ai.prewarm()
+        }
+        if warmCheck == nil {
+            warmCheck = scheduler.schedule(after: Self.warmCheckInterval) { [weak self] in
+                self?.warmCheck = nil
+                self?.keepAIWarm()
+            }
+        }
     }
 
     /// Un client (iPhone ou Mac) vient de s'authentifier : en vie privée native, l'état réel de la caméra est relu
     /// tout de suite, pour que ce qu'il affiche ne date pas de la dernière relecture lente (spec § 6.5 bis).
     public func clientConnected() {
+        keepAIWarm()
         privacy.refreshRealState()
     }
 
@@ -117,6 +145,7 @@ public final class PTZController {
         privacy.abandonSession()
         control.reset()
         lastControl = control.state
+        keepAIWarm()
         privacy.utilityUpdated()
         publish()
     }
@@ -180,6 +209,7 @@ public final class PTZController {
         control.reset()
         lastControl = control.state
         if present {
+            keepAIWarm()
             log("Caméra branchée.")
             if !privacy.isActive {
                 motion.refreshPosition()

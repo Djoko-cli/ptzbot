@@ -16,6 +16,9 @@ public struct DaemonOptions: Equatable, Sendable {
         self.sdkDirectory = sdkDirectory
     }
 
+    /// Lancé avec le SDK (`--ai`, donné par PTZBot) : l'utilitaire reste chargé tant que ptzd tourne (spec § 6.9).
+    public var keepsAIWarm: Bool { aiPath != nil }
+
     public static let usage = "usage : ptzd [--parent <pid>] [--ai <chemin d'obsbot-ai>] [--sdk <dossier du SDK>]"
 
     /// Code de sortie d'une option inconnue ou mal formée (EX_USAGE).

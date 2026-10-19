@@ -121,6 +121,8 @@ struct PTZDaemon {
                 outputURL: logsDirectory.appending(path: "obsbot-ai.log"),
                 environment: options.aiEnvironment,
                 scheduler: scheduler,
+                // Lancé avec le SDK (`--ai`) : l'utilitaire reste chargé tant que ptzd tourne (spec § 6.9).
+                keepWarm: options.keepsAIWarm,
                 log: log
             ),
             store: JSONFileStateStore(url: supportDirectory.appending(path: "state.json"), log: { write($0) }),

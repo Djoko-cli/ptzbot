@@ -40,11 +40,17 @@ final class FakeAIRunner: AIRunner {
     /// Paliers de la remontée : assez fins pour que deux relectures serrées (0,15 s) ne tombent pas sur le même.
     static let riseStep: TimeInterval = 0.05
     static let wakeStateTime: TimeInterval = 1.7
+    /// Une session neuve du SDK met environ 4 s à trouver la caméra (mesuré).
+    static let loadTime: TimeInterval = 4
     /// La pose du mode natif, en degrés UVC (85° vers le bas).
     static let nativeTilt: Double = -85
 
     /// État réel simulé de la caméra.
     var state: CameraRunState = .run
+    /// L'utilitaire reste chargé tant que ptzd tourne (ptzd lancé avec le SDK, spec § 6.9) : `prewarm` ouvre alors une
+    /// session, prête au bout de `loadTime` (4 s mesurés), sans aucun ordre. Faux : `prewarm` ne fait que compter, comme
+    /// avant, et seul un ordre ouvre une session.
+    var keepsWarm = false
     /// L'utilitaire existe (SDK installé) : sans lui, la vie privée native n'est pas proposée.
     var nativePrivacyAvailable = false
     var supportsNativePrivacy: Bool { nativePrivacyAvailable }
@@ -70,6 +76,8 @@ final class FakeAIRunner: AIRunner {
     private var sessionOpen = false
     /// La session ouverte a déjà répondu : le SDK a trouvé la caméra.
     private var sessionAnswered = false
+    /// Change à chaque session ouverte ou fermée : le « ready » d'une session qui n'existe plus est écarté.
+    private var sessionGeneration = 0
 
     /// Le SDK est prêt, comme au vrai utilitaire après « ready » : une session ouverte, qui a déjà répondu.
     var isReady: Bool { sessionOpen && sessionAnswered }
@@ -158,6 +166,25 @@ final class FakeAIRunner: AIRunner {
 
     func prewarm() {
         prewarms += 1
+        guard keepsWarm, !sessionOpen else { return }
+        openSession()
+        // Le SDK cherche la caméra : « ready » au bout de `loadTime` (tout de suite sans horloge liée).
+        guard let scheduler else {
+            sessionAnswered = true
+            return
+        }
+        let generation = sessionGeneration
+        scheduler.schedule(after: Self.loadTime) { [weak self] in
+            guard let self, generation == sessionGeneration, sessionOpen else { return }
+            sessionAnswered = true
+        }
+    }
+
+    private func openSession() {
+        sessionOpen = true
+        sessionAnswered = false
+        sessionGeneration += 1
+        sessions += 1
     }
 
     /// Comme le vrai : l'utilitaire est arrêté, l'ordre en cours échoue.
@@ -204,9 +231,7 @@ final class FakeAIRunner: AIRunner {
             return
         }
         if !sessionOpen {
-            sessionOpen = true
-            sessionAnswered = false
-            sessions += 1
+            openSession()
         }
         received.append(order)
         current = (order, completion)
