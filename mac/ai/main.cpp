@@ -1,14 +1,19 @@
 // obsbot-ai on|off : allume (suivi d'une personne) ou coupe le suivi IA de la Tiny 2, puis se termine
 // (spec § 6.9, spec app Mac § 7.5). Codes de sortie : 0 = fait, 1 = caméra introuvable, 2 = erreur du SDK,
-// 3 = argument manquant ou inconnu. Le mode à un coup sert de repli et de vérification de l'installeur du SDK
+// 3 = argument manquant ou ordre inconnu. Le mode à un coup sert de repli et de vérification de l'installeur du SDK
 // (lancé sans argument, il sort avec le code 3 sans charger le SDK).
 // obsbot-ai privacy-on|privacy-off : mode vie privée natif de la caméra (spec § 6.5 bis). `privacy-on` coupe le
 // micro pendant le sommeil (cameraSetMicrophoneDuringSleepU(0)) puis met la caméra en vie privée (image noire,
 // micro coupé, objectif ramené à 90°) ; `privacy-off` la réveille, et elle reprend d'elle-même sa position.
+// obsbot-ai privacy-status : lit l'état réel de la caméra (cameraGetCameraStatusU, champ `tiny.dev_status` pour la
+// Tiny 2) et l'écrit sur la sortie : `run`, `privacy` ou `sleep` (spec § 6.5 bis). Un état d'une autre valeur est une
+// erreur du SDK (code 2) : ptzd ne suppose jamais.
 // Mêmes codes de sortie que `on` et `off`.
-// obsbot-ai serve : garde le SDK chargé et lit les ordres `on`, `off`, `privacy on` ou `privacy off` sur l'entrée,
-// un par ligne ; répond sur la sortie par « obsbot-ai: ready », puis « obsbot-ai: ok » ou « obsbot-ai: err <code> »
-// par ordre. Se termine quand l'entrée se ferme. Lancé par ptzd, seulement pendant qu'un client pilote.
+// obsbot-ai serve : garde le SDK chargé et lit les ordres `on`, `off`, `privacy on`, `privacy off` ou
+// `privacy status` sur l'entrée, un par ligne ; répond sur la sortie par « obsbot-ai: ready », puis par ordre
+// « obsbot-ai: ok » (« obsbot-ai: ok run|privacy|sleep » pour `privacy status`) ou « obsbot-ai: err <code> », avec
+// les codes ci-dessus : 1 (caméra introuvable), 2 (erreur du SDK), 3 (ordre inconnu, d'un ptzd plus récent que
+// cet utilitaire). Se termine quand l'entrée se ferme. Lancé par ptzd, seulement pendant qu'un client pilote.
 // En mode serve, la vraie sortie standard est réservée aux réponses : tout ce que le SDK écrit sur la
 // sortie standard va vers l'erreur standard (le journal), pour ne jamais se mêler aux réponses.
 // En mode serve, un fil surveille aussi le parent : si ptzd meurt pendant que le SDK bloque le fil principal,
@@ -58,27 +63,51 @@ static int32_t setPrivacy(const std::shared_ptr<Device> &tiny2, bool on) {
     return tiny2->cameraSetDevRunStatusR(Device::DevStatusPrivacy);
 }
 
+// État réel de la caméra (spec § 6.5 bis) : `state` reçoit « run », « privacy » ou « sleep ». La Tiny 2 porte son
+// état dans la partie `tiny` de CameraStatus (dev.hpp : « tiny, tiny4k, tiny2 series… »). Une valeur inattendue est une
+// erreur : mieux vaut un échec, que ptzd relit plus tard, qu'un état deviné.
+static int32_t readPrivacy(const std::shared_ptr<Device> &tiny2, const char **state) {
+    Device::CameraStatus status;
+    std::memset(&status, 0, sizeof(status));
+    const int32_t result = tiny2->cameraGetCameraStatusU(status);
+    if (result != RM_RET_OK) {
+        return result;
+    }
+    switch (status.tiny.dev_status) {
+    case Device::DevStatusRun: *state = "run"; return RM_RET_OK;
+    case Device::DevStatusSleep: *state = "sleep"; return RM_RET_OK;
+    case Device::DevStatusPrivacy: *state = "privacy"; return RM_RET_OK;
+    default:
+        std::fprintf(stderr, "obsbot-ai : état de la caméra inattendu (%d)\n", status.tiny.dev_status);
+        return RM_RET_ERR;
+    }
+}
+
 // Un ordre du mode serve ou du mode à un coup. Les ordres du mode serve s'écrivent « privacy on » ; ceux du mode
 // à un coup « privacy-on » (un seul argument).
-enum class Order { TrackingOn, TrackingOff, PrivacyOn, PrivacyOff, Unknown };
+enum class Order { TrackingOn, TrackingOff, PrivacyOn, PrivacyOff, PrivacyStatus, Unknown };
 
 static Order parseOrder(const std::string &text) {
     if (text == "on") return Order::TrackingOn;
     if (text == "off") return Order::TrackingOff;
     if (text == "privacy on" || text == "privacy-on") return Order::PrivacyOn;
     if (text == "privacy off" || text == "privacy-off") return Order::PrivacyOff;
+    if (text == "privacy status" || text == "privacy-status") return Order::PrivacyStatus;
     return Order::Unknown;
 }
 
-static int32_t execute(const std::shared_ptr<Device> &tiny2, Order order) {
+// Exécute l'ordre ; `state` reçoit l'état lu pour `PrivacyStatus`, et reste nul sinon. Un ordre inconnu n'arrive pas
+// jusqu'ici (il est refusé avant, avec le code 3) ; s'il y arrivait, ce serait un échec, jamais un faux succès.
+static int32_t execute(const std::shared_ptr<Device> &tiny2, Order order, const char **state) {
     switch (order) {
     case Order::TrackingOn: return setTracking(tiny2, true);
     case Order::TrackingOff: return setTracking(tiny2, false);
     case Order::PrivacyOn: return setPrivacy(tiny2, true);
     case Order::PrivacyOff: return setPrivacy(tiny2, false);
+    case Order::PrivacyStatus: return readPrivacy(tiny2, state);
     case Order::Unknown: break;
     }
-    return RM_RET_OK;
+    return RM_RET_ERR;
 }
 
 // Le SDK peut encore initialiser la caméra dans son propre fil : le refermer
@@ -131,12 +160,16 @@ static int serve() {
     while (std::getline(std::cin, line)) {
         // Les ordres du mode serve n'acceptent que la forme « privacy on » (avec une espace).
         const Order order = line.rfind("privacy-", 0) == 0 ? Order::Unknown : parseOrder(line);
+        const char *state = nullptr;
         if (order == Order::Unknown) {
             reply(replies, "err 3");
-        } else if (execute(tiny2, order) == RM_RET_OK) {
-            reply(replies, "ok");
-        } else {
+        } else if (execute(tiny2, order, &state) != RM_RET_OK) {
             reply(replies, "err 2");
+        } else if (state != nullptr) {
+            const std::string text = std::string("ok ") + state;
+            reply(replies, text.c_str());
+        } else {
+            reply(replies, "ok");
         }
     }
     Devices::get().close();
@@ -150,14 +183,15 @@ int main(int argc, char **argv) {
     const Order order = argc == 2 ? parseOrder(argv[1]) : Order::Unknown;
     // Le mode à un coup n'accepte que la forme « privacy-on » (un seul argument, sans espace).
     if (order == Order::Unknown || std::strchr(argv[1], ' ') != nullptr) {
-        std::fprintf(stderr, "usage : obsbot-ai on|off|privacy-on|privacy-off|serve\n");
+        std::fprintf(stderr, "usage : obsbot-ai on|off|privacy-on|privacy-off|privacy-status|serve\n");
         return 3;
     }
     auto tiny2 = findTiny2();
     if (!tiny2) {
         notFound(nullptr);
     }
-    int32_t result = execute(tiny2, order);
+    const char *state = nullptr;
+    int32_t result = execute(tiny2, order, &state);
     Devices::get().close();
     if (result != RM_RET_OK) {
         std::fprintf(stderr, "obsbot-ai : %s a renvoyé %d\n", argv[1], result);
@@ -168,6 +202,8 @@ int main(int argc, char **argv) {
     case Order::TrackingOff: std::printf("obsbot-ai : suivi IA coupé\n"); break;
     case Order::PrivacyOn: std::printf("obsbot-ai : vie privée allumée\n"); break;
     case Order::PrivacyOff: std::printf("obsbot-ai : vie privée coupée\n"); break;
+    // Le seul mot de l'état, pour un script ou un essai à la main.
+    case Order::PrivacyStatus: std::printf("%s\n", state != nullptr ? state : "?"); break;
     case Order::Unknown: break;
     }
     return 0;
