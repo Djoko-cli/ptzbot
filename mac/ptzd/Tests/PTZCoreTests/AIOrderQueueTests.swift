@@ -24,7 +24,7 @@ struct AIOrderQueueTests {
         runner.answer(.status)
         #expect(runner.inFlight == nil)
         #expect(runner.refused.isEmpty)
-        #expect(results.values == ["off success", "privacy on sdkError", "status state(PTZCore.CameraRunState.run)"])
+        #expect(results.values == ["off success", "privacy on sdkError", "status state(PTZCore.CameraRunState.run, pitch: nil)"])
     }
 
     @Test("Un ordre donné par un rappel part après ceux qui attendaient déjà")

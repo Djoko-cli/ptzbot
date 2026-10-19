@@ -27,20 +27,21 @@ public enum AIResult: Equatable, Sendable {
     }
 }
 
-/// État réel de la caméra, lu par `privacy status` (spec § 6.5 bis).
+/// État réel de la caméra, lu par `privacy status` (spec § 6.5 bis). obsbot-ai rend `privacy` pour l'état brut 3 ou 4
+/// (la Tiny 2 rend 3 en vie privée native, mesuré le 19/10), `run` pour 1 ; toute autre valeur est une erreur.
 public enum CameraRunState: String, Equatable, Sendable {
     /// Éveillée : image et micro en service.
     case run
     /// Mode vie privée natif : image noire, micro coupé.
     case privacy
-    /// Veille de la caméra.
-    case sleep
 }
 
-/// Issue d'une lecture de l'état réel : l'état lu, ou l'échec de l'ordre.
+/// Issue d'une lecture de l'état réel : l'état lu, ou l'échec de l'ordre. `pitch` est le second témoin : l'inclinaison
+/// de la nacelle lue par le SDK (`gimbalGetAttitudeInfoR`, en degrés, positive vers le bas ; environ 70 à −70° UVC,
+/// 85 en vie privée native), nil si elle ne se lit pas. Elle accompagne aussi un état illisible.
 public enum PrivacyReading: Equatable, Sendable {
-    case state(CameraRunState)
-    case failed(AIResult)
+    case state(CameraRunState, pitch: Double? = nil)
+    case failed(AIResult, pitch: Double? = nil)
 }
 
 /// Un ordre de l'utilitaire : le suivi IA, la vie privée native de la caméra, ou la lecture de son état réel
@@ -86,7 +87,7 @@ extension AIRunner {
         completion(.launchFailed("vie privée native indisponible"))
     }
     public func readPrivacy(completion: @escaping @MainActor @Sendable (PrivacyReading) -> Void) {
-        completion(.failed(.launchFailed("vie privée native indisponible")))
+        completion(.failed(.launchFailed("vie privée native indisponible"), pitch: nil))
     }
     public var supportsNativePrivacy: Bool { false }
 }

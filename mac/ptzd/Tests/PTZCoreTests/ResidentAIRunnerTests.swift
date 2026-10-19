@@ -623,7 +623,7 @@ struct ResidentAIRunnerTests {
         await cleanUp(runner, serve)
     }
 
-    @Test("Un ordre de vie privée a 10 s pour répondre (5 s pour un ordre de suivi)")
+    @Test("Un ordre de vie privée a 5 s pour répondre, comme un ordre de suivi (il rend la main en 0 ms, mesuré)")
     func privacyOrderTimeout() async throws {
         let serve = try FakeServe(Self.silentThenAnswering)
         let scheduler = FakeScheduler()
@@ -631,21 +631,21 @@ struct ResidentAIRunnerTests {
         let outcome = Outcome()
         runner.runPrivacy(on: true) { outcome.value = $0 }
         #expect(await eventually { serve.orders.count == 1 })
-        scheduler.advance(by: 9.9)
+        scheduler.advance(by: 4.9)
         #expect(outcome.value == nil)
         scheduler.advance(by: 0.2)
         #expect(outcome.value == .timeout)
         await cleanUp(runner, serve)
     }
 
-    @Test("privacy status : « ok privacy », « ok run », « ok sleep » se lisent tels quels, sur le même processus")
+    @Test("privacy status : l'état et l'inclinaison (second témoin) se lisent tels quels, sur le même processus")
     func privacyStatus() async throws {
         let serve = try FakeServe("""
             echo "obsbot-ai: ready"
-            for state in privacy run sleep; do
+            for reply in "privacy 84.9" "run 69.8" "run"; do
                 read order
                 echo "$order" >> "$dir/orders"
-                echo "obsbot-ai: ok $state"
+                echo "obsbot-ai: ok $reply"
             done
             while read order; do echo "obsbot-ai: ok"; done
             """)
@@ -657,18 +657,20 @@ struct ResidentAIRunnerTests {
             _ = await eventually { outcome.value != nil }
             readings.append(outcome.value ?? .failed(.timeout))
         }
-        #expect(readings == [.state(.privacy), .state(.run), .state(.sleep)])
+        #expect(readings == [.state(.privacy, pitch: 84.9), .state(.run, pitch: 69.8), .state(.run, pitch: nil)])
         #expect(serve.orders == ["privacy status", "privacy status", "privacy status"])
         #expect(serve.starts.count == 1)
         await cleanUp(runner, serve)
     }
 
-    @Test("privacy status : un mot inconnu est un échec, jamais un état deviné ; err 3 : ordre inconnu")
+    @Test("privacy status : un mot inconnu (sleep compris) est un échec, jamais un état deviné ; err 3 : ordre inconnu")
     func privacyStatusUnreadable() async throws {
         let serve = try FakeServe("""
             echo "obsbot-ai: ready"
             read order
             echo "obsbot-ai: ok flou"
+            read order
+            echo "obsbot-ai: ok sleep 12.0"
             read order
             echo "obsbot-ai: err 3"
             """)
@@ -676,11 +678,45 @@ struct ResidentAIRunnerTests {
         let first = ReadingOutcome()
         runner.readPrivacy { first.value = $0 }
         _ = await eventually { first.value != nil }
-        #expect(first.value == .failed(.sdkError))
+        #expect(first.value == .failed(.sdkError, pitch: nil))
         let second = ReadingOutcome()
         runner.readPrivacy { second.value = $0 }
         _ = await eventually { second.value != nil }
-        #expect(second.value == .failed(.unknownOrder))
+        #expect(second.value == .failed(.sdkError, pitch: 12))
+        let third = ReadingOutcome()
+        runner.readPrivacy { third.value = $0 }
+        _ = await eventually { third.value != nil }
+        #expect(third.value == .failed(.unknownOrder, pitch: nil))
+        await cleanUp(runner, serve)
+    }
+
+    @Test("D : une lecture ratée (err 2, avec l'inclinaison) n'arrête pas l'utilitaire ; l'ordre suivant part sur la même session")
+    func failedReadKeepsSession() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            read order
+            echo "$order" >> "$dir/orders"
+            echo "obsbot-ai: err 2 84.9"
+            read order
+            echo "$order" >> "$dir/orders"
+            echo "obsbot-ai: err 2"
+            while read order; do
+                echo "$order" >> "$dir/orders"
+                echo "obsbot-ai: ok"
+            done
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let first = ReadingOutcome()
+        runner.readPrivacy { first.value = $0 }
+        _ = await eventually { first.value != nil }
+        #expect(first.value == .failed(.sdkError, pitch: 84.9))
+        let second = ReadingOutcome()
+        runner.readPrivacy { second.value = $0 }
+        _ = await eventually { second.value != nil }
+        #expect(second.value == .failed(.sdkError, pitch: nil))
+        #expect(await order(runner, on: false) == .success)
+        #expect(serve.orders == ["privacy status", "privacy status", "off"])
+        #expect(serve.starts.count == 1)
         await cleanUp(runner, serve)
     }
 

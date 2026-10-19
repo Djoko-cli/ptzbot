@@ -168,11 +168,15 @@ struct PTZDaemon {
             }
         }
 
+        // Sortie de veille du Mac : la caméra a pu être réveillée pendant ce temps (vie privée native, spec § 6.5 bis).
+        let wakeWatcher = SystemWakeWatcher { controller.systemWoke() }
+
         log("ptzd démarre.")
         camera.startWatching()
         server.start()
         talkbackWatcher.start()
-        withExtendedLifetime((camera, controller, server, parentWatcher, serviceLock, voiceSink, talkbackWatcher)) {
+        wakeWatcher.start()
+        withExtendedLifetime((camera, controller, server, parentWatcher, serviceLock, voiceSink, talkbackWatcher, wakeWatcher)) {
             dispatchMain()
         }
     }

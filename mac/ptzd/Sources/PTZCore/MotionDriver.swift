@@ -76,6 +76,13 @@ public final class MotionDriver {
         }
     }
 
+    /// N'essaie plus l'arrêt refusé : la caméra va passer en mode natif, où aucun ordre UVC ne doit partir
+    /// (spec § 6.5 bis, relecture m6).
+    public func cancelStopRetry() {
+        deadMan?.cancel()
+        deadMan = nil
+    }
+
     /// Arrête le mouvement si ce client était le dernier à piloter.
     public func clientDisconnected(_ client: ClientID) {
         guard client == lastMover else { return }

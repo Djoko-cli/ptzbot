@@ -1,13 +1,20 @@
+import Foundation
 import Testing
 @testable import PTZCore
 
-/// obsbot-ai simulé, fidèle au vrai `ResidentAIRunner` (spec § 6.5 bis) :
+/// obsbot-ai simulé, fidèle au vrai `ResidentAIRunner` et à la vraie caméra (spec § 6.5 bis, mesures du 19/10) :
 /// - **un seul ordre à la fois** : un ordre donné pendant un autre est refusé tout de suite (`launchFailed`), comme le
 ///   vrai, et noté dans `refused` ;
 /// - la réponse arrive quand le test le décide : réussie, en échec, en retard, ou perdue (l'ordre agit sur la caméra,
-///   mais le vrai runner rend `timeout` faute de réponse) ;
+///   mais le vrai runner rend `timeout` faute de réponse) ; les lectures peuvent aussi répondre seules (`autoReads`) ;
+/// - les **sessions du SDK** : le vrai utilitaire repart d'une session neuve (4 s) après un `err 2` d'ordre, un
+///   `err 3`, un délai dépassé ou une réinitialisation ; une lecture ratée la garde ;
 /// - un **état réel simulé** de la caméra (`state`), que les ordres de vie privée changent quand ils agissent, et que
-///   `privacy status` lit.
+///   `privacy status` lit avec le second témoin, l'inclinaison de la nacelle ;
+/// - **les mouvements propres de la caméra**, avec `attach(camera:scheduler:)` : la bascule (état 3 en 0,5 s), la
+///   descente vers 85° (1,1 s), la remontée à la position d'avant (0,5 s), l'état 1 vers 1,7 s après le réveil, et le
+///   retour éveillé et droit après une coupure d'alimentation (`powerCycle`). Sans caméra liée, la bascule est
+///   immédiate.
 @MainActor
 final class FakeAIRunner: AIRunner {
     enum Order: Equatable {
@@ -21,11 +28,25 @@ final class FakeAIRunner: AIRunner {
         case reading(@MainActor @Sendable (PrivacyReading) -> Void)
     }
 
+    /// Délais mesurés sur la vraie caméra (19/10).
+    static let switchTime: TimeInterval = 0.5
+    static let descentTime: TimeInterval = 1.1
+    static let riseTime: TimeInterval = 0.5
+    static let wakeStateTime: TimeInterval = 1.7
+    /// La pose du mode natif, en degrés UVC (85° vers le bas).
+    static let nativeTilt: Double = -85
+
     /// État réel simulé de la caméra.
     var state: CameraRunState = .run
     /// L'utilitaire existe (SDK installé) : sans lui, la vie privée native n'est pas proposée.
     var nativePrivacyAvailable = false
     var supportsNativePrivacy: Bool { nativePrivacyAvailable }
+    /// `privacy status` ne sait pas lire l'état (vieux micrologiciel) : `err 2`, avec l'inclinaison si elle se lit.
+    var stateUnreadable = false
+    /// L'inclinaison ne se lit pas par le SDK.
+    var pitchUnreadable = false
+    /// Les lectures de l'état répondent seules, tout de suite, avec l'état simulé.
+    var autoReads = false
 
     /// Ordres acceptés, dans l'ordre.
     private(set) var received: [Order] = []
@@ -35,7 +56,19 @@ final class FakeAIRunner: AIRunner {
     private(set) var prewarms = 0
     /// Réinitialisations demandées (branchement ou débranchement de la caméra, recompilation).
     private(set) var resets = 0
+    /// Sessions du SDK ouvertes (chacune coûte environ 4 s à la vraie caméra).
+    private(set) var sessions = 0
+    private var sessionOpen = false
     private var current: (order: Order, completion: Completion)?
+
+    private weak var camera: FakeCamera?
+    private var scheduler: FakeScheduler?
+    /// L'état vers lequel la caméra va pendant une bascule (nil : aucune en cours) ; les mouvements d'un ordre remplacé
+    /// sont abandonnés.
+    private var heading: CameraRunState?
+    private var motionGeneration = 0
+    /// La position d'avant le mode natif, que la caméra reprend d'elle-même au réveil.
+    private var beforeNative: PanTiltPosition?
 
     /// L'ordre en cours, sans réponse encore.
     var inFlight: Order? { current?.order }
@@ -52,6 +85,32 @@ final class FakeAIRunner: AIRunner {
     var statusReads: Int {
         received.filter { $0 == .status }.count
     }
+    /// Le second témoin : l'inclinaison lue par le SDK, positive vers le bas ; nil sans caméra liée.
+    var pitch: Double? {
+        guard !pitchUnreadable, let camera else { return nil }
+        return -camera.position.tilt
+    }
+
+    /// Lie la caméra simulée et l'horloge : la caméra bouge alors d'elle-même, aux délais mesurés.
+    func attach(camera: FakeCamera, scheduler: FakeScheduler) {
+        self.camera = camera
+        self.scheduler = scheduler
+    }
+
+    /// Coupure d'alimentation : la caméra revient éveillée et droite (mesuré), et la session du SDK ne vaut plus.
+    func powerCycle() {
+        motionGeneration += 1
+        state = .run
+        heading = nil
+        beforeNative = nil
+        sessionOpen = false
+        camera?.position = PanTiltPosition(pan: 0, tilt: 0)
+    }
+
+    /// Réveil par un autre moyen (bouton, télécommande, app OBSBOT) : la caméra reprend sa position d'avant.
+    func wakeExternally() {
+        move(toPrivacy: false)
+    }
 
     func run(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
         accept(.tracking(on), .result(completion))
@@ -63,6 +122,9 @@ final class FakeAIRunner: AIRunner {
 
     func readPrivacy(completion: @escaping @MainActor @Sendable (PrivacyReading) -> Void) {
         accept(.status, .reading(completion))
+        if autoReads, current?.order == .status {
+            respond(.success, effect: false)
+        }
     }
 
     func prewarm() {
@@ -73,6 +135,7 @@ final class FakeAIRunner: AIRunner {
     func reset() {
         resets += 1
         respond(.launchFailed("utilitaire réinitialisé"), effect: false)
+        sessionOpen = false
     }
 
     /// Répond à l'ordre en cours, quel qu'il soit ; sans effet s'il n'y en a pas. Un ordre de vie privée réussi agit sur
@@ -107,9 +170,13 @@ final class FakeAIRunner: AIRunner {
             let refusal = AIResult.launchFailed("ordre précédent encore en cours")
             switch completion {
             case let .result(done): done(refusal)
-            case let .reading(done): done(.failed(refusal))
+            case let .reading(done): done(.failed(refusal, pitch: nil))
             }
             return
+        }
+        if !sessionOpen {
+            sessionOpen = true
+            sessions += 1
         }
         received.append(order)
         current = (order, completion)
@@ -118,14 +185,68 @@ final class FakeAIRunner: AIRunner {
     private func respond(_ result: AIResult, effect: Bool) {
         guard let pending = current else { return }
         current = nil
+        // Comme le vrai : session neuve après un délai dépassé, un ordre inconnu, ou une erreur du SDK sur un ordre ; une
+        // lecture ratée garde la session.
+        switch result {
+        case .timeout, .unknownOrder:
+            sessionOpen = false
+        case .sdkError where pending.order != .status:
+            sessionOpen = false
+        default:
+            break
+        }
         if effect, case let .privacy(on) = pending.order {
-            state = on ? .privacy : .run
+            move(toPrivacy: on)
         }
         switch pending.completion {
         case let .result(done):
             done(result)
         case let .reading(done):
-            done(result == .success ? .state(state) : .failed(result))
+            if result == .success, !stateUnreadable {
+                done(.state(state, pitch: pitch))
+            } else if result == .success || result == .sdkError {
+                done(.failed(.sdkError, pitch: pitch))
+            } else {
+                done(.failed(result, pitch: nil))
+            }
+        }
+    }
+
+    /// La bascule et les mouvements propres de la caméra ; deux entrées ou deux réveils de suite ne font rien de plus.
+    private func move(toPrivacy on: Bool) {
+        let target: CameraRunState = on ? .privacy : .run
+        guard (heading ?? state) != target else { return }
+        guard let camera, let scheduler else {
+            state = target
+            return
+        }
+        heading = target
+        motionGeneration += 1
+        let generation = motionGeneration
+        if on {
+            let before = camera.position
+            beforeNative = before
+            scheduler.schedule(after: Self.switchTime) { [weak self] in
+                guard let self, motionGeneration == generation else { return }
+                state = .privacy
+                heading = nil
+            }
+            scheduler.schedule(after: Self.descentTime) { [weak self, weak camera] in
+                guard let self, motionGeneration == generation else { return }
+                camera?.position = PanTiltPosition(pan: before.pan, tilt: Self.nativeTilt)
+            }
+        } else {
+            // Sans position notée (état posé par le test), celle où ptzd la met toujours avant le mode natif : −70°.
+            let back = beforeNative ?? PanTiltPosition(pan: camera.position.pan, tilt: PrivacyReconciler.privacyTilt)
+            scheduler.schedule(after: Self.riseTime) { [weak self, weak camera] in
+                guard let self, motionGeneration == generation else { return }
+                camera?.position = back
+            }
+            scheduler.schedule(after: Self.wakeStateTime) { [weak self] in
+                guard let self, motionGeneration == generation else { return }
+                state = .run
+                heading = nil
+            }
         }
     }
 }

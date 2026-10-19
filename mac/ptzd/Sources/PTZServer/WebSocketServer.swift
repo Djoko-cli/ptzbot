@@ -809,6 +809,9 @@ public final class WebSocketServer {
         send(.authenticated, to: id)
         send(.state(controller.snapshot), to: id)
         publishAdmin()
+        // Ce que le client va afficher est relu sur la caméra (vie privée native, spec § 6.5 bis) ; un changement est
+        // diffusé à tous.
+        controller.clientConnected()
     }
 
     /// Le même iPhone s'authentifie de nouveau (Wi-Fi vers 4G) : l'ancienne connexion est peut-être

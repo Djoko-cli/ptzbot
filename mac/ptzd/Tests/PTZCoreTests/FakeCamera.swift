@@ -12,11 +12,19 @@ final class FakeCamera: CameraDevice {
     var ignoreAbsoluteCommands = 0
     /// Les relectures de position échouent tant que c'est vrai.
     var failReads = false
+    /// Les ordres en vitesse sont refusés tant que c'est vrai.
+    var refuseRelative = false
+    /// Ordres en vitesse tentés, refusés compris.
+    private(set) var relativeAttempts = 0
     private(set) var relativeCommands: [PanTiltRelative] = []
     private(set) var absoluteCommands: [PanTiltPosition] = []
     private(set) var zoomCommands: [Int] = []
 
     func setPanTiltRelative(_ command: PanTiltRelative) throws {
+        relativeAttempts += 1
+        if refuseRelative, isPresent {
+            throw CameraError.ioKit(-536870212)
+        }
         try checkWrite()
         relativeCommands.append(command)
     }

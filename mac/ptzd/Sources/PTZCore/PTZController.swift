@@ -91,6 +91,18 @@ public final class PTZController {
         control.prewarm()
     }
 
+    /// Un client (iPhone ou Mac) vient de s'authentifier : en vie privée native, l'état réel de la caméra est relu
+    /// tout de suite, pour que ce qu'il affiche ne date pas de la dernière relecture lente (spec § 6.5 bis).
+    public func clientConnected() {
+        privacy.refreshRealState()
+    }
+
+    /// Le Mac sort de veille : la caméra a pu être réveillée pendant ce temps ; même relecture qu'à une connexion.
+    public func systemWoke() {
+        log("Le Mac sort de veille.")
+        privacy.refreshRealState()
+    }
+
     /// PTZBot a recompilé ou réinstallé obsbot-ai (message `aiUpdated`) : l'utilitaire repart du nouveau programme, et
     /// la vie privée est réconciliée avec lui (spec § 6.5 bis).
     public func aiUpdated() {
