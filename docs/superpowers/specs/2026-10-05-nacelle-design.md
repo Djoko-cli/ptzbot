@@ -79,7 +79,7 @@ Le protocole utilise des messages JSON, un par trame WebSocket texte, avec un ch
 
 | Message | Champs |
 |---|---|
-| `state` | `camera` : `connected` ou `absent` · `control` : `idle`, `taking`, `ready` ou `failed` · `privacy` : booléen · `privacyMode` : `native` ou `tilt`, absent hors vie privée et chez un ptzd ancien (§ 6.5 bis) · `pan`, `tilt` : degrés, ou null si inconnus · `zoom` : entier ou null · `moving` : booléen |
+| `state` | `camera` : `connected` ou `absent` · `control` : `idle`, `taking`, `ready` ou `failed` · `privacy` : booléen · `privacyMode` : `native` ou `tilt`, absent hors vie privée et chez un ptzd ancien (§ 6.5 bis) · `privacyReason` : en mode `tilt`, `noSDK`, `updating` ou `failed`, absente pendant que le mode natif est en cours (§ 6.5 bis) · `pan`, `tilt` : degrés, ou null si inconnus · `zoom` : entier ou null · `moving` : booléen |
 | `error` | `code` : `privacyActive`, `cameraAbsent`, `uvcFailed` ou `badMessage` · `message` : texte lisible |
 
 `ptzd` envoie un `state` complet à chaque nouvelle connexion, puis à chaque changement. Un message inconnu ou mal formé reçoit une réponse `error`/`badMessage` et n'a aucun autre effet.
@@ -156,7 +156,7 @@ Amendement du § 6.5, demandé par Djoko : la vie privée doit aussi couper le *
   2. **attente de la fin de la remontée propre de la caméra** : relecture de la position jusqu'à ce qu'elle soit stable (délai maximal ; le délai réel est mesuré au banc) ;
   3. seulement alors, zoom puis **position mémorisée** (`saved`, ou 0°/0° si elle est inconnue), avec la vérification et les renvois du § 6.5 ;
   4. sans le SDK : directement l'étape 3.
-- **Utilitaire ancien ou absent.** Une réponse « ordre inconnu » (code 3) d'un obsbot-ai d'avant la V2 n'est pas un échec de la caméra : ptzd reste sur la protection à −70° et publie « mise à jour du SDK en cours ». Quand PTZBot a recompilé obsbot-ai, il le dit à ptzd, qui redémarre son utilitaire et réconcilie. Si la recompilation est impossible (outils de développement absents, échec), la note le dit, avec l'action à faire.
+- **Utilitaire ancien ou absent.** Une réponse « ordre inconnu » (code 3) d'un obsbot-ai d'avant la V2 n'est pas un échec de la caméra : ptzd reste sur la protection à −70° et publie « mise à jour du SDK en cours ». Quand PTZBot a recompilé obsbot-ai, il le dit à ptzd (message d'administration `aiUpdated`, par 127.0.0.1), qui redémarre son utilitaire et réconcilie. Si la recompilation est impossible (outils de développement absents, échec), la note le dit, avec l'action à faire.
 - **État publié** (`privacyMode`, champ optionnel) : `native` seulement quand l'état réel `privacy` a été lu ; `tilt` sinon (protection à −70° seule), avec la raison (`noSDK`, `updating`, `failed`). L'interface dit « objectif détourné » tant que le mode natif n'est pas confirmé, puis « image et micro coupés ».
 - **Pendant** : `move`, `zoom` et le suivi IA restent refusés (`privacyActive`).
 - **Interfaces** (Mac et iOS, textes au vouvoiement ; en anglais et en français sur Mac) : les notes ci-dessus, selon la raison.

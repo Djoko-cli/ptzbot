@@ -10,18 +10,22 @@ version GitHub et à la fenêtre de mise à jour.
 
 **English**
 
-- **Privacy now turns off the camera's image and microphone.** Until now, privacy only turned the lens down; the picture and the sound kept going to HomeKit and to the iPhone app. Now the camera goes into its own privacy mode: the picture is black and the sound is silent, everywhere, while the stream stays connected. When you turn privacy off, the camera wakes up and goes back to where it was by itself.
-- This needs the OBSBOT SDK. Without it, or if the camera does not respond after a second try, privacy falls back to turning the lens down, as before, and says so: a note under the switch in PTZBot, and under the privacy button in the iPhone app, tells you that the picture and the sound are not turned off.
-- The privacy switch now says what it does: "Turns off the camera's image and microphone".
-- Quitting PTZBot does not wake the camera: privacy stays on, and PTZBot applies it again the next time it starts.
+- **Privacy now turns off the camera's image and microphone.** Until now, privacy only turned the lens down; the picture and the sound kept going to HomeKit and to the iPhone app. The lens still turns down at once; then, with the OBSBOT SDK, the camera goes into its own privacy mode: the picture is black and the sound is silent, everywhere, while the stream stays connected.
+- PTZBot reads the camera's real state: it only says "Image and microphone off" once the camera confirms it, and "Lens turned away" until then. If the camera does not switch after a second try, privacy keeps the lens turned down and says so.
+- When you turn privacy off, the camera wakes up and moves back by itself; PTZBot waits until it has stopped moving, then puts it back exactly where it was before privacy.
+- Without the OBSBOT SDK, privacy only turns the lens down, as before. A note under the switch in PTZBot says why the picture and the sound are not turned off (no SDK, SDK update in progress, or the camera did not switch), and so does the status banner of the updated iPhone app.
+- After updating from 1.1.0, PTZBot recompiles its OBSBOT helper at first launch and then tells the service, which uses the new helper right away. If Apple's developer tools are missing, the note under **Privacy** asks you to install them, with a link.
+- Quitting PTZBot does not wake the camera: privacy stays on, and at the next launch PTZBot reads the camera's state instead of moving it again.
 - If the camera cannot leave privacy after two tries, privacy stays on and PTZBot tells you.
 
 **Français**
 
-- **La vie privée coupe désormais l'image et le micro de la caméra.** Jusqu'ici, elle ne faisait que baisser l'objectif : l'image et le son continuaient d'arriver dans HomeKit et dans l'app iPhone. Maintenant la caméra passe dans son propre mode vie privée : l'image est noire et le son muet, partout, alors que le flux reste connecté. Quand vous éteignez la vie privée, la caméra se réveille et reprend toute seule sa position.
-- Cela demande le SDK OBSBOT. Sans lui, ou si la caméra ne répond pas après un second essai, la vie privée revient à baisser l'objectif, comme avant, et le dit : une note sous l'interrupteur dans PTZBot, et sous le bouton de vie privée dans l'app iPhone, précise que l'image et le son ne sont pas coupés.
-- L'interrupteur de vie privée dit maintenant ce qu'il fait : « Coupe l'image et le micro de la caméra ».
-- Quitter PTZBot ne réveille pas la caméra : la vie privée reste active, et PTZBot la réapplique au prochain lancement.
+- **La vie privée coupe désormais l'image et le micro de la caméra.** Jusqu'ici, elle ne faisait que baisser l'objectif : l'image et le son continuaient d'arriver dans HomeKit et dans l'app iPhone. L'objectif se baisse toujours tout de suite ; puis, avec le SDK OBSBOT, la caméra passe dans son propre mode vie privée : l'image est noire et le son muet, partout, alors que le flux reste connecté.
+- PTZBot lit l'état réel de la caméra : il n'affiche « Image et micro coupés » qu'une fois que la caméra le confirme, et « Objectif détourné » jusque-là. Si la caméra ne bascule pas après un second essai, la vie privée garde l'objectif baissé et le dit.
+- Quand vous éteignez la vie privée, la caméra se réveille et revient d'elle-même ; PTZBot attend qu'elle ait fini de bouger, puis la remet exactement où elle était avant la vie privée.
+- Sans le SDK OBSBOT, la vie privée ne fait que baisser l'objectif, comme avant. Une note sous l'interrupteur dans PTZBot dit pourquoi l'image et le son ne sont pas coupés (pas de SDK, mise à jour du SDK en cours, ou caméra qui n'a pas basculé), de même que le bandeau d'état de l'app iPhone mise à jour.
+- Après la mise à jour depuis la 1.1.0, PTZBot recompile son utilitaire OBSBOT au premier lancement, puis le signale au service, qui utilise aussitôt le nouvel utilitaire. Si les outils de développement d'Apple manquent, la note sous **Vie privée** vous invite à les installer, avec un lien.
+- Quitter PTZBot ne réveille pas la caméra : la vie privée reste active, et au prochain lancement PTZBot lit l'état de la caméra au lieu de la faire bouger à nouveau.
 - Si la caméra n'arrive pas à quitter la vie privée après deux essais, la vie privée reste active et PTZBot vous le dit.
 
 ## 1.1.0
