@@ -129,6 +129,15 @@ public final class PTZController {
     /// branchement vu juste après est traité comme un démarrage, non comme une coupure d'alimentation (réserve 1).
     public func systemWoke() {
         log("Le Mac sort de veille.")
+        // Utilitaire gardé chaud, vie privée éteinte : sa session du SDK a pu devenir périmée pendant la veille (le bus
+        // USB n'est pas renuméroté, aucun branchement n'est vu). Elle repart neuve : une entrée dans les secondes qui
+        // suivent prend le repli (−70° tout de suite), jamais un ordre sur une session invalide. En vie privée, la
+        // relecture du réveil (`privacy.systemWoke`) couvre déjà ce cas : deux lectures ratées ouvrent une session neuve.
+        if ai.keepsWarm, !privacy.isActive {
+            control.reset()
+            lastControl = control.state
+            keepAIWarm()
+        }
         privacy.systemWoke()
     }
 

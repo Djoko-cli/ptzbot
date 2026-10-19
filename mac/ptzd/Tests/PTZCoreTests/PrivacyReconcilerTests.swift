@@ -1189,6 +1189,30 @@ struct PrivacyReconcilerTests {
         #expect(camera.absoluteCommands.isEmpty)
     }
 
+    @Test("I1 (vp7) : vie privée active au réveil du Mac, session du SDK périmée : la relecture du réveil échoue, la session repart neuve et la lecture suivante dit vrai")
+    func macWakeInPrivacyStaleSession() {
+        let controller = ready()
+        enterNative(controller)
+        runner.autoReads = false
+        let resets = runner.resets
+        runner.stateUnreadable = true
+        runner.pitchUnreadable = true
+        controller.systemWoke()
+        runner.answer(.status)
+        scheduler.advance(by: PrivacyReconciler.rereadInterval)
+        runner.answer(.status)
+        // Aucune affirmation tant que rien ne se lit ; session neuve ; aucun ordre de position.
+        #expect(controller.snapshot.privacyMode == .tilt)
+        #expect(controller.snapshot.privacyReason == .pending)
+        #expect(runner.resets == resets + 1)
+        #expect(camera.absoluteCommands.isEmpty)
+        runner.stateUnreadable = false
+        runner.pitchUnreadable = false
+        runner.answer(.status)
+        #expect(controller.snapshot.privacyMode == .native)
+        #expect(camera.absoluteCommands.isEmpty)
+    }
+
     @Test("I1 : une lecture ratée isolée, puis réussie, ne change rien : même session, « natif » toujours publié")
     func isolatedFailedReadChangesNothing() {
         let controller = ready()
@@ -1678,6 +1702,55 @@ struct PrivacyReconcilerTests {
         scheduler.advance(by: FakeAIRunner.loadTime + 0.1)
         #expect(runner.isReady)
         #expect(runner.sessions == 3)
+    }
+
+    @Test("Toujours chaud, I1 : à la sortie de veille du Mac, la session du SDK repart neuve ; une entrée juste après prend le repli, une entrée 5 s après le chemin rapide")
+    func warmSessionRenewedAfterMacWake() {
+        let controller = makeWarmController()
+        controller.cameraPresenceChanged(true)
+        scheduler.advance(by: 6 * 3600)
+        #expect(runner.isReady)
+        #expect(runner.sessions == 1)
+        // Le Mac se réveille sans renumérotation du bus : aucun branchement vu, mais la session a pu devenir périmée.
+        controller.systemWoke()
+        #expect(runner.resets == 2)
+        #expect(runner.sessions == 2)
+        #expect(!runner.isReady)
+        // Entrée à +1 s : le SDK n'est pas prêt, repli (−70° tout de suite), jamais un ordre sur une session périmée.
+        scheduler.advance(by: 1)
+        runner.autoReads = true
+        #expect(controller.handle(.privacy(on: true), from: 1) == nil)
+        #expect(camera.absoluteCommands == [Self.down])
+        #expect(log.lines.contains { $0.contains("chemin de repli") })
+        #expect(!log.lines.contains { $0.contains("chemin rapide") })
+    }
+
+    @Test("Toujours chaud, I1 : une entrée 5 s après la sortie de veille du Mac prend le chemin rapide, sur la session neuve")
+    func fastEntryAfterMacWake() {
+        let controller = makeWarmController()
+        controller.cameraPresenceChanged(true)
+        scheduler.advance(by: 6 * 3600)
+        controller.systemWoke()
+        scheduler.advance(by: FakeAIRunner.loadTime + 1)
+        #expect(runner.isReady)
+        runner.autoReads = true
+        #expect(controller.handle(.privacy(on: true), from: 1) == nil)
+        runner.answer(.tracking(false))
+        runner.answer(.privacy(true))
+        scheduler.advance(by: FakeAIRunner.descentTime + 0.1)
+        #expect(log.lines.contains { $0.contains("chemin rapide") })
+        #expect(camera.absoluteCommands.isEmpty)
+        #expect(controller.snapshot.privacyMode == .native)
+    }
+
+    @Test("Pas toujours chaud : la sortie de veille du Mac hors vie privée ne touche pas l'utilitaire")
+    func macWakeNotWarmLeavesRunner() {
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        let resets = runner.resets
+        controller.systemWoke()
+        #expect(runner.resets == resets)
+        #expect(runner.prewarms == 0)
     }
 
     @Test("Toujours chaud : en vie privée aussi, un message d'un client prépare l'utilitaire ; caméra absente, jamais")
