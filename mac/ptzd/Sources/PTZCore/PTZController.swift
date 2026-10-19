@@ -28,6 +28,8 @@ public final class PTZController {
     private let zoom: ZoomDriver
     private let privacy: PrivacyKeeper
     private let control: ControlTaker
+    /// Vie privée native de la caméra, par l'utilitaire du suivi IA (spec § 6.5 bis).
+    private let native: NativePrivacy
     private let log: LogSink
     private var settle: (any Cancellable)?
     private var verifyTarget = false
@@ -50,13 +52,17 @@ public final class PTZController {
         motion = MotionDriver(camera: camera, scheduler: scheduler, settings: settings, log: log)
         zoom = ZoomDriver(camera: camera, scheduler: scheduler, log: log)
         privacy = PrivacyKeeper(camera: camera, store: store, log: log)
-        control = ControlTaker(runner: ai, scheduler: scheduler, isObsbotCenterRunning: isObsbotCenterRunning, log: log)
+        let control = ControlTaker(runner: ai, scheduler: scheduler, isObsbotCenterRunning: isObsbotCenterRunning, log: log)
+        self.control = control
+        // L'utilitaire ne traite qu'un ordre à la fois, et la coupure du suivi IA passe avant la vie privée.
+        native = NativePrivacy(runner: ai, scheduler: scheduler, canRun: { control.state != .taking }, log: log)
         snapshot = StateSnapshot(
             camera: camera.isPresent ? .connected : .absent,
             control: .idle,
             privacy: privacy.isActive,
             pan: nil, tilt: nil, zoom: nil,
-            moving: false
+            moving: false,
+            privacyMode: privacy.isActive ? privacy.mode : nil
         )
         motion.onChange = { [weak self] in self?.publish() }
         zoom.onChange = { [weak self] in self?.publish() }
@@ -107,6 +113,12 @@ public final class PTZController {
             guard camera.isPresent else {
                 return (.cameraAbsent, "Caméra débranchée.")
             }
+            // Une bascule native est en cours : la demande suivante n'a rien à ajouter, sauf une sortie pendant une
+            // entrée (ou une réapplication), qui l'annule.
+            if native.isBusy {
+                guard !on, native.pendingOn == true else { return nil }
+                native.cancel()
+            }
             if on {
                 // Le suivi IA ramènerait l'objectif vers la personne.
                 if control.mayBeTracking {
@@ -114,11 +126,25 @@ public final class PTZController {
                 }
                 return attempt {
                     try? motion.stop()
-                    try privacy.enter(currentPosition: motion.position, currentZoom: zoom.value)
-                    refreshAfterSettling()
+                    guard !privacy.isActive else {
+                        refreshAfterSettling()
+                        return
+                    }
+                    // Sans SDK (pas d'utilitaire), l'inclinaison d'emblée (spec § 6.5 bis).
+                    let mode: PrivacyMode = native.isAvailable ? .native : .tilt
+                    try privacy.enter(currentPosition: motion.position, currentZoom: zoom.value, mode: mode)
+                    if mode == .native {
+                        applyNative(requester: client)
+                    } else {
+                        refreshAfterSettling()
+                    }
                 }
             }
             return attempt {
+                if privacy.isActive, privacy.mode == .native {
+                    leaveNative(requester: client)
+                    return
+                }
                 try privacy.exit()
                 refreshAfterSettling()
             }
@@ -144,6 +170,8 @@ public final class PTZController {
     /// Branchement ou débranchement de la caméra. Au branchement, la vie privée
     /// est réappliquée et le suivi IA recoupé, au cas où la caméra aurait redémarré.
     public func cameraPresenceChanged(_ present: Bool) {
+        // Un ordre de vie privée native en cours ne vaut plus : le rebranchement réapplique la vie privée.
+        native.cancel()
         // Le SDK gardé par l'utilitaire du suivi IA ne connaît plus la caméra : session neuve au prochain ordre.
         control.reset()
         if present {
@@ -151,13 +179,9 @@ public final class PTZController {
             motion.refreshPosition()
             zoom.refresh()
             if privacy.isActive {
-                do {
-                    try privacy.enforce()
-                    refreshAfterSettling()
-                } catch {
-                    log("Vie privée non réappliquée : \(error)")
-                }
+                // La coupure du suivi part avant : la vie privée native attend sa fin (l'utilitaire ne traite qu'un ordre à la fois).
                 control.take()
+                reapplyPrivacy()
             } else {
                 // La caméra a pu redémarrer avec son propre réglage : le dernier ordre ne vaut plus.
                 control.forget()
@@ -179,14 +203,109 @@ public final class PTZController {
         let previous = lastControl
         lastControl = control.state
         if previous == .taking, control.state != .taking, privacy.isActive, camera.isPresent {
+            // En `native`, la caméra se gère seule (spec § 6.5 bis) : enforce() n'y fait rien.
             do {
                 try privacy.enforce()
-                refreshAfterSettling()
+                if privacy.mode == .tilt {
+                    refreshAfterSettling()
+                }
             } catch {
                 log("Vie privée non réappliquée après la coupure du suivi IA : \(error)")
             }
         }
+        // L'utilitaire est libre : un ordre de vie privée native qui attendait peut partir.
+        if control.state != .taking {
+            native.resume()
+        }
         publish()
+    }
+
+    // MARK: - Vie privée native (spec § 6.5 bis)
+
+    /// Réapplique la vie privée retenue (démarrage, rebranchement). Avec le SDK, le mode natif est (re)tenté : un `tilt`
+    /// subi par repli garde l'objectif détourné pendant ce temps. Sans SDK, l'inclinaison.
+    private func reapplyPrivacy() {
+        if native.isAvailable {
+            if privacy.mode == .tilt {
+                reapplyTilt()
+            }
+            applyNative(requester: nil)
+        } else {
+            if privacy.mode == .native {
+                log("Vie privée native impossible (utilitaire obsbot-ai absent) : repli sur l'inclinaison de l'objectif.")
+            }
+            reapplyTilt()
+        }
+    }
+
+    /// L'objectif est renvoyé vers le bas ; un mode `native` devient `tilt`.
+    private func reapplyTilt() {
+        do {
+            if privacy.mode == .native {
+                try privacy.fallBackToTilt()
+            } else {
+                try privacy.enforce()
+            }
+            refreshAfterSettling()
+        } catch {
+            log("Vie privée non réappliquée : \(error)")
+        }
+    }
+
+    /// Lance `privacy on` (avec son second essai). Réussi : le mode est `native`. Échoué deux fois : repli sur `tilt` avec
+    /// avertissement au client qui a demandé la vie privée, et dans le journal ; un `tilt` déjà en place y reste.
+    private func applyNative(requester client: ClientID?) {
+        if privacy.mode == .native {
+            // Plus rien à vérifier : la caméra gère elle-même sa position. Un `tilt` à réappliquer garde sa vérification.
+            settle?.cancel()
+            settle = nil
+            verifyTarget = false
+        }
+        native.apply(on: true) { [weak self] result in
+            guard let self, privacy.isActive else { return }
+            if result == .success {
+                privacy.promoteToNative()
+                refreshPositionAfterSettling()
+                return
+            }
+            guard privacy.mode == .native else {
+                log("Vie privée native toujours impossible (\(result.userDescription)) : l'objectif reste détourné.")
+                return
+            }
+            log("Vie privée native impossible (\(result.userDescription)) : repli sur l'inclinaison de l'objectif.")
+            if let client {
+                onClientError?(client, .uvcFailed, PrivacyFailureText.fallbackToTilt)
+            }
+            reapplyTilt()
+        }
+    }
+
+    /// Lance `privacy off` (avec son second essai). Réussi : la caméra a repris seule sa position, ptzd la relit. Échoué
+    /// deux fois : la vie privée reste active et l'erreur est montrée.
+    private func leaveNative(requester client: ClientID) {
+        native.apply(on: false) { [weak self] result in
+            guard let self, privacy.isActive else { return }
+            guard result == .success else {
+                log("La vie privée native n'a pas pu être levée (\(result.userDescription)) : elle reste active.")
+                onClientError?(client, .uvcFailed, PrivacyFailureText.exitFailed)
+                return
+            }
+            try? privacy.exit()
+            refreshPositionAfterSettling()
+        }
+    }
+
+    /// Relit la position et le zoom après le délai habituel, sans rien comparer ni renvoyer : en mode natif, la caméra
+    /// gère elle-même sa position.
+    private func refreshPositionAfterSettling() {
+        verifyTarget = false
+        settle?.cancel()
+        settle = scheduler.schedule(after: Self.settleDelay) { [weak self] in
+            guard let self else { return }
+            self.settle = nil
+            self.motion.refreshPosition()
+            self.zoom.refresh()
+        }
     }
 
     /// Relit la position après `delay`, puis la compare à la cible. `resends` compte
@@ -208,6 +327,11 @@ public final class PTZController {
     /// maxResends fois ; en vie privée, jusqu'à ce que le tilt soit atteint.
     private func checkTargetReached(resends: Int) {
         guard verifyTarget, let target = privacy.lastTarget else { return }
+        // Mode natif : la caméra gère elle-même sa position (spec § 6.5 bis), rien à vérifier ni à renvoyer.
+        if privacy.isActive, privacy.mode == .native {
+            verifyTarget = false
+            return
+        }
         let position = motion.position
         if let position {
             // En vie privée, seul le tilt protège l'image ; à -70° la caméra relit d'ailleurs
@@ -301,7 +425,8 @@ public final class PTZController {
             zoom: zoom.value,
             moving: motion.isMoving,
             aiTracking: control.tracking,
-            talkback: talkback
+            talkback: talkback,
+            privacyMode: privacy.isActive ? privacy.mode : nil
         )
         guard next != snapshot else { return }
         snapshot = next

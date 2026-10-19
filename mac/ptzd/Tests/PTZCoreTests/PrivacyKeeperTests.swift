@@ -1,3 +1,4 @@
+import NacelleProtocol
 import Testing
 @testable import PTZCore
 
@@ -96,5 +97,77 @@ struct PrivacyKeeperTests {
         #expect(keeper.isActive)
         #expect(camera.absoluteCommands == [PanTiltPosition(pan: 30, tilt: PrivacyKeeper.privacyTilt)])
         #expect(log.lines.count == 1)
+    }
+
+    // MARK: - Mode natif (spec § 6.5 bis)
+
+    @Test("Entrée native : position retenue avec le mode, la caméra n'est pas touchée")
+    func enterNative() throws {
+        let keeper = makeKeeper()
+        try keeper.enter(currentPosition: PanTiltPosition(pan: 30, tilt: -10), currentZoom: 50, mode: .native)
+        #expect(keeper.isActive)
+        #expect(keeper.mode == .native)
+        #expect(camera.absoluteCommands.isEmpty)
+        #expect(keeper.lastTarget == nil)
+        #expect(store.state == PersistedState(privacy: true, saved: SavedPosition(pan: 30, tilt: -10, zoom: 50), mode: .native))
+    }
+
+    @Test("Le mode natif n'envoie ni renvoi ni réapplication à la caméra")
+    func nativeSendsNothing() throws {
+        let keeper = makeKeeper()
+        try keeper.enter(currentPosition: PanTiltPosition(pan: 30, tilt: -10), currentZoom: 50, mode: .native)
+        try keeper.enforce()
+        try keeper.resendLastTarget()
+        #expect(camera.absoluteCommands.isEmpty)
+    }
+
+    @Test("Sortie native : la caméra reprend seule sa position, rien n'est envoyé ; l'état est effacé")
+    func exitNative() throws {
+        let keeper = makeKeeper()
+        try keeper.enter(currentPosition: PanTiltPosition(pan: 30, tilt: -10), currentZoom: 50, mode: .native)
+        try keeper.exit()
+        #expect(!keeper.isActive)
+        #expect(camera.absoluteCommands.isEmpty)
+        #expect(camera.zoomCommands.isEmpty)
+        #expect(store.state == PersistedState(privacy: false, saved: nil))
+    }
+
+    @Test("Repli sur l'inclinaison : mode retenu, objectif vers le bas à l'ancien pan, position mémorisée gardée")
+    func fallBackToTilt() throws {
+        let keeper = makeKeeper()
+        try keeper.enter(currentPosition: PanTiltPosition(pan: 30, tilt: -10), currentZoom: 50, mode: .native)
+        try keeper.fallBackToTilt()
+        #expect(keeper.mode == .tilt)
+        #expect(camera.absoluteCommands == [PanTiltPosition(pan: 30, tilt: PrivacyKeeper.privacyTilt)])
+        #expect(store.state == PersistedState(privacy: true, saved: SavedPosition(pan: 30, tilt: -10, zoom: 50), mode: .tilt))
+        try keeper.exit()
+        #expect(camera.absoluteCommands.last == PanTiltPosition(pan: 30, tilt: -10))
+        #expect(camera.zoomCommands == [50])
+    }
+
+    @Test("Repli refusé par la caméra : le mode tilt est quand même retenu")
+    func fallBackRefused() throws {
+        let keeper = makeKeeper()
+        try keeper.enter(currentPosition: PanTiltPosition(pan: 30, tilt: -10), currentZoom: 50, mode: .native)
+        camera.failNextWrite = .ioKit(-536870212)
+        #expect(throws: CameraError.ioKit(-536870212)) { try keeper.fallBackToTilt() }
+        #expect(keeper.mode == .tilt)
+        #expect(store.state.mode == .tilt)
+    }
+
+    @Test("Promotion : un tilt subi devient natif, la position mémorisée est gardée")
+    func promoteToNative() throws {
+        let keeper = makeKeeper()
+        try keeper.enter(currentPosition: PanTiltPosition(pan: 30, tilt: -10), currentZoom: 50)
+        keeper.promoteToNative()
+        #expect(keeper.mode == .native)
+        #expect(keeper.lastTarget == nil)
+        #expect(store.state == PersistedState(privacy: true, saved: SavedPosition(pan: 30, tilt: -10, zoom: 50), mode: .native))
+    }
+
+    @Test("Le mode retenu est relu au démarrage")
+    func modeReloaded() {
+        store.state = PersistedState(privacy: true, saved: nil, mode: .native)
+        #expect(makeKeeper().mode == .native)
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import NacelleProtocol
 
 /// Position mémorisée à l'entrée en vie privée.
 public struct SavedPosition: Codable, Equatable, Sendable {
@@ -13,14 +14,30 @@ public struct SavedPosition: Codable, Equatable, Sendable {
     }
 }
 
-/// Contenu de state.json (spec § 6.5).
+/// Contenu de state.json (spec § 6.5 et § 6.5 bis).
 public struct PersistedState: Codable, Equatable, Sendable {
     public var privacy: Bool
     public var saved: SavedPosition?
+    /// Mode de la vie privée en cours ; sans effet hors vie privée. Absent d'un fichier ancien : `tilt`.
+    public var mode: PrivacyMode
 
-    public init(privacy: Bool, saved: SavedPosition?) {
+    public init(privacy: Bool, saved: SavedPosition?, mode: PrivacyMode = .tilt) {
         self.privacy = privacy
         self.saved = saved
+        self.mode = mode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case privacy, saved, mode
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        privacy = try c.decode(Bool.self, forKey: .privacy)
+        saved = try c.decodeIfPresent(SavedPosition.self, forKey: .saved)
+        // Un fichier d'avant la vie privée V2 n'a pas de mode ; une valeur inconnue se lit aussi `tilt`, le repli qui
+        // ne dépend pas du SDK.
+        mode = (try? c.decodeIfPresent(PrivacyMode.self, forKey: .mode)) ?? .tilt
     }
 }
 

@@ -3,7 +3,7 @@ import Foundation
 /// Garde `obsbot-ai serve` lancé pendant qu'un client pilote : le SDK n'est chargé qu'une fois, et un ordre
 /// part en quelques millisecondes au lieu de 4 s. L'utilitaire s'arrête après `idleDelay` sans activité.
 ///
-/// Protocole : un ordre par ligne (`on` ou `off`) sur l'entrée de l'utilitaire. Sur sa sortie, les lignes
+/// Protocole : un ordre par ligne (`on`, `off`, `privacy on` ou `privacy off`) sur l'entrée de l'utilitaire. Sur sa sortie, les lignes
 /// préfixées par `obsbot-ai: ` sont des réponses (`ready` une fois le SDK prêt, puis `ok` ou `err <code>` par
 /// ordre) ; toute autre ligne est du bruit du SDK, ajouté au fichier de sortie. L'utilitaire se termine
 /// quand son entrée se ferme, ce qui arrive aussi si ptzd meurt.
@@ -60,6 +60,8 @@ public final class ResidentAIRunner: AIRunner {
     private let idleDelay: TimeInterval
     private let readyTimeout: TimeInterval
     private let orderTimeout: TimeInterval
+    /// La vie privée native fait basculer la caméra : plus longue qu'un changement de suivi (spec § 6.5 bis).
+    private let privacyOrderTimeout: TimeInterval
     private let log: LogSink
 
     /// L'utilitaire en service.
@@ -69,7 +71,7 @@ public final class ResidentAIRunner: AIRunner {
     /// Un lancement est demandé alors que `stopping` n'a pas fini.
     private var wanted = false
     /// Ordre en attente que l'utilitaire soit prêt, puis en cours.
-    private var order: (on: Bool, completion: @MainActor @Sendable (AIResult) -> Void, sent: Bool)?
+    private var order: (order: AIOrder, completion: @MainActor @Sendable (AIResult) -> Void, sent: Bool)?
     /// Du lancement à « ready » : le SDK met environ 4 s, 10 s de recherche de la caméra au pire.
     private var startTimer: (any Cancellable)?
     /// De l'écriture de l'ordre à sa réponse.
@@ -88,6 +90,7 @@ public final class ResidentAIRunner: AIRunner {
         idleDelay: TimeInterval = 600,
         readyTimeout: TimeInterval = 25,
         orderTimeout: TimeInterval = 5,
+        privacyOrderTimeout: TimeInterval = 10,
         log: @escaping LogSink = { _ in }
     ) {
         self.executableURL = executableURL
@@ -97,6 +100,7 @@ public final class ResidentAIRunner: AIRunner {
         self.idleDelay = idleDelay
         self.readyTimeout = readyTimeout
         self.orderTimeout = orderTimeout
+        self.privacyOrderTimeout = privacyOrderTimeout
         self.log = log
     }
 
@@ -121,12 +125,25 @@ public final class ResidentAIRunner: AIRunner {
     }
 
     public func run(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        submit(.tracking(on: on), completion: completion)
+    }
+
+    public func runPrivacy(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        submit(.privacy(on: on), completion: completion)
+    }
+
+    /// Sans l'utilitaire installé (pas de SDK), la vie privée native n'existe pas (spec § 6.5 bis).
+    public var supportsNativePrivacy: Bool {
+        FileManager.default.isExecutableFile(atPath: executableURL.path)
+    }
+
+    private func submit(_ newOrder: AIOrder, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
         guard order == nil else {
             completion(.launchFailed("ordre de suivi IA précédent encore en cours"))
             return
         }
         restartIdleTimer()
-        order = (on, completion, false)
+        order = (newOrder, completion, false)
         ensureHelper()
         if order != nil, !(helper?.ready ?? false), startTimer == nil {
             // Un ancien utilitaire finit de mourir : l'attente est bornée comme un démarrage.
@@ -297,7 +314,7 @@ public final class ResidentAIRunner: AIRunner {
         guard let helper, helper.ready, let current = order, !current.sent else { return }
         order?.sent = true
         do {
-            try helper.input.fileHandleForWriting.write(contentsOf: Data((current.on ? "on\n" : "off\n").utf8))
+            try helper.input.fileHandleForWriting.write(contentsOf: Data((current.order.line + "\n").utf8))
         } catch {
             log("obsbot-ai : écriture de l'ordre impossible (\(error)).")
             stopHelper(terminate: false)
@@ -305,7 +322,8 @@ public final class ResidentAIRunner: AIRunner {
             return
         }
         orderTimer?.cancel()
-        orderTimer = scheduler.schedule(after: orderTimeout) { [weak self] in
+        let timeout: TimeInterval = if case .privacy = current.order { privacyOrderTimeout } else { orderTimeout }
+        orderTimer = scheduler.schedule(after: timeout) { [weak self] in
             self?.expired(waitingFor: "réponse")
         }
     }

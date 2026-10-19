@@ -23,10 +23,28 @@ public enum AIResult: Equatable, Sendable {
     }
 }
 
-/// Allume (`on`) ou coupe le suivi IA de la caméra.
+/// Un ordre de l'utilitaire : le suivi IA, ou la vie privée native de la caméra (spec § 6.5 bis).
+enum AIOrder: Equatable, Sendable {
+    case tracking(on: Bool)
+    case privacy(on: Bool)
+
+    /// La ligne écrite sur l'entrée de `obsbot-ai serve`.
+    var line: String {
+        switch self {
+        case let .tracking(on): on ? "on" : "off"
+        case let .privacy(on): on ? "privacy on" : "privacy off"
+        }
+    }
+}
+
+/// Allume (`on`) ou coupe le suivi IA de la caméra, et lui fait entrer ou quitter sa vie privée native.
 @MainActor
 public protocol AIRunner: AnyObject {
     func run(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void)
+    /// Vie privée native de l'OBSBOT : image et micro coupés (spec § 6.5 bis). Même contrat que `run`.
+    func runPrivacy(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void)
+    /// L'utilitaire existe : sans lui (pas de SDK), la vie privée se limite à l'inclinaison de l'objectif.
+    var supportsNativePrivacy: Bool { get }
     /// Un client pilote : l'utilitaire peut se préparer pour que le prochain ordre parte vite.
     func prewarm()
     /// La caméra a été branchée ou débranchée : l'utilitaire garde une session du SDK qui ne vaut plus.
@@ -36,4 +54,8 @@ public protocol AIRunner: AnyObject {
 extension AIRunner {
     public func prewarm() {}
     public func reset() {}
+    public func runPrivacy(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        completion(.launchFailed("vie privée native indisponible"))
+    }
+    public var supportsNativePrivacy: Bool { false }
 }

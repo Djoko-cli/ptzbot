@@ -582,4 +582,64 @@ struct ResidentAIRunnerTests {
             return
         }
     }
+
+    // MARK: - Vie privée native (spec § 6.5 bis)
+
+    @Test("Vie privée native : « privacy on » puis « privacy off » sont écrits tels quels sur l'entrée de l'utilitaire")
+    func privacyOrders() async throws {
+        let serve = try FakeServe(answering)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let first = Outcome()
+        runner.runPrivacy(on: true) { first.value = $0 }
+        _ = await eventually { first.value != nil }
+        #expect(first.value == .success)
+        let second = Outcome()
+        runner.runPrivacy(on: false) { second.value = $0 }
+        _ = await eventually { second.value != nil }
+        #expect(second.value == .success)
+        #expect(await order(runner, on: false) == .success)
+        #expect(serve.orders == ["privacy on", "privacy off", "off"])
+        #expect(serve.starts.count == 1)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("Vie privée native : err 2 donne l'erreur du SDK, comme un ordre de suivi")
+    func privacySDKError() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            while read order; do echo "obsbot-ai: err 2"; done
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let outcome = Outcome()
+        runner.runPrivacy(on: true) { outcome.value = $0 }
+        _ = await eventually { outcome.value != nil }
+        #expect(outcome.value == .sdkError)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("Un ordre de vie privée a 10 s pour répondre (5 s pour un ordre de suivi)")
+    func privacyOrderTimeout() async throws {
+        let serve = try FakeServe(Self.silentThenAnswering)
+        let scheduler = FakeScheduler()
+        let runner = runner(serve, scheduler: scheduler)
+        let outcome = Outcome()
+        runner.runPrivacy(on: true) { outcome.value = $0 }
+        #expect(await eventually { serve.orders.count == 1 })
+        scheduler.advance(by: 9.9)
+        #expect(outcome.value == nil)
+        scheduler.advance(by: 0.2)
+        #expect(outcome.value == .timeout)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("L'utilitaire installé permet la vie privée native ; absent, non")
+    func supportsNativePrivacy() throws {
+        let serve = try FakeServe(answering)
+        let present = runner(serve, scheduler: DispatchScheduler())
+        #expect(present.supportsNativePrivacy)
+        serve.remove()
+        #expect(!present.supportsNativePrivacy)
+        let absent = ResidentAIRunner(executableURL: URL(fileURLWithPath: "/nonexistent/obsbot-ai"), scheduler: DispatchScheduler())
+        #expect(!absent.supportsNativePrivacy)
+    }
 }
