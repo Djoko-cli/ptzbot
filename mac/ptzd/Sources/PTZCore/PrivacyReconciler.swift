@@ -679,6 +679,8 @@ public final class PrivacyReconciler {
             return
         }
         if attempts < Self.maxAttempts {
+            // Le seul cas où un `privacy on` part sans avoir lu l'état : deux lectures ratées de suite.
+            note("état lu : illisible (\(readFailures) lectures ratées), privacy on de précaution, sans effet si la caméra y est déjà")
             pause(Self.retryDelay) { $0.sendPrivacyOn() }
             return
         }
@@ -891,6 +893,18 @@ public final class PrivacyReconciler {
         // Une ligne de journal quand le témoin décide, ou quand rien ne se lit ; pas à chaque relecture lente.
         if let witness, seen == nil || seen != real {
             log("Caméra : \(witness).")
+        }
+        // Dans une séquence (démarrage, branchement, reprise), l'état lu est écrit avant d'agir : on voit ce que ptzd a
+        // constaté, et pourquoi un ordre natif part ou non.
+        if sequenceStart != nil, let seen {
+            let source = witness == nil ? "" : " (témoin)"
+            let action = switch (wanted, seen) {
+            case (true, .privacy): "rien à faire"
+            case (true, .run): "reprotection"
+            case (false, .privacy): "la sortie reprend"
+            case (false, .run): "la sortie se termine"
+            }
+            note("état lu : \(seen.rawValue)\(source), \(action)")
         }
         if let seen {
             apply(seen, pitch: pitch)
@@ -1160,7 +1174,8 @@ public final class PrivacyReconciler {
 
     /// Sortie rapide (spec § 6.5 bis, « Accélération ») : la caméra vient d'être lue éveillée, nacelle immobile. Position
     /// et zoom relus (UVC), comparés à `saved` ; l'inclinaison lue par le SDK doit aussi y être, au cas où la relecture
-    /// UVC serait périmée. Vrai si rien n'est à renvoyer. Une relecture ne bouge pas la caméra.
+    /// UVC serait périmée. Vrai si rien n'est à renvoyer, jamais si l'inclinaison du SDK manque (le second témoin ne dit
+    /// rien : la position mémorisée est renvoyée et vérifiée). Une relecture ne bouge pas la caméra.
     private func returnedToSaved() -> Bool {
         motion.refreshPosition()
         let position = motion.position
@@ -1176,15 +1191,20 @@ public final class PrivacyReconciler {
         if let position {
             gap = max(abs(position.pan - target.pan), abs(position.tilt - target.tilt))
         }
+        // Le second témoin manque (inclinaison illisible par le SDK) : la relecture UVC, juste après le mouvement propre
+        // de la caméra, n'est pas mesurée comme fiable. Rien n'est conclu : la position mémorisée est renvoyée et
+        // vérifiée, comme avant la sortie rapide.
+        let witnessMissing = lastPitch == nil
         if let lastPitch {
             gap = max(gap, abs(-lastPitch - target.tilt))
         }
         let zoomSame = target.zoom == nil || zoomValue == target.zoom
-        let back = gap < Self.returnTolerance && zoomSame
+        let back = gap < Self.returnTolerance && zoomSame && !witnessMissing
         let memorized = "pan \(Self.degrees(target.pan)), tilt \(Self.degrees(target.tilt)), zoom \(target.zoom.map { "\($0)" } ?? "inconnu")"
         let verdict = back ? "rien à renvoyer" : "position mémorisée renvoyée"
         let shownGap = gap.isFinite ? Self.degrees(gap) : "inconnu"
-        note("position relue \(read), \(readZoom)\(readPitch) ; mémorisée \(memorized) : écart \(shownGap)\(zoomSame ? "" : ", zoom différent"), \(verdict)")
+        let missing = witnessMissing ? ", inclinaison SDK illisible" : ""
+        note("position relue \(read), \(readZoom)\(readPitch) ; mémorisée \(memorized) : écart \(shownGap)\(zoomSame ? "" : ", zoom différent")\(missing), \(verdict)")
         return back
     }
 

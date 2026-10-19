@@ -1586,6 +1586,200 @@ struct PrivacyReconcilerTests {
         #expect(camera.absoluteCommands == [Self.down])
         #expect(controller.snapshot.privacyReason == .pending)
     }
+    // MARK: - vp6 : utilitaire toujours chaud, I3, journal du démarrage
+
+    /// ptzd lancé avec le SDK : l'utilitaire reste chargé tant que ptzd tourne (spec § 6.9).
+    private func makeWarmController() -> PTZController {
+        runner.keepsWarm = true
+        camera.position = Self.before
+        return makeController()
+    }
+
+    @Test("Toujours chaud : à la présence de la caméra au démarrage, l'utilitaire est préparé, et prêt 4 s plus tard sans aucun pilotage")
+    func warmAtStartup() {
+        let controller = makeWarmController()
+        #expect(runner.prewarms == 0)
+        controller.cameraPresenceChanged(true)
+        #expect(runner.prewarms == 1)
+        #expect(!runner.isReady)
+        #expect(runner.received.isEmpty)
+        scheduler.advance(by: FakeAIRunner.loadTime + 0.1)
+        #expect(runner.isReady)
+        #expect(runner.received.isEmpty)
+        #expect(runner.sessions == 1)
+        // Des heures sans client : toujours prêt.
+        scheduler.advance(by: 6 * 3600)
+        #expect(runner.isReady)
+        #expect(runner.sessions == 1)
+    }
+
+    @Test("Toujours chaud : la première entrée, utilitaire jamais piloté, prend le chemin rapide (aucun ordre UVC), derrière la coupure du suivi")
+    func firstEntryIsFast() {
+        let controller = makeWarmController()
+        controller.cameraPresenceChanged(true)
+        scheduler.advance(by: 60)
+        #expect(runner.isReady)
+        runner.autoReads = true
+        #expect(controller.handle(.privacy(on: true), from: 1) == nil)
+        // Suivi IA inconnu : coupé d'abord (file), puis privacy on directement, sans −70°.
+        #expect(camera.absoluteCommands.isEmpty)
+        #expect(runner.inFlight == .tracking(false))
+        runner.answer(.tracking(false))
+        #expect(runner.inFlight == .privacy(true))
+        runner.answer(.privacy(true))
+        scheduler.advance(by: FakeAIRunner.descentTime + 0.1)
+        #expect(controller.snapshot.privacyMode == .native)
+        #expect(camera.absoluteCommands.isEmpty)
+        #expect(log.lines.contains { $0.contains("chemin rapide") })
+        #expect(!log.lines.contains { $0.contains("chemin de repli") })
+    }
+
+    @Test("Toujours chaud : rebranchement, mise à jour d'obsbot-ai et connexion d'un client relancent l'utilitaire ; caméra absente, rien")
+    func warmAgainAfterRestartEvents() {
+        let controller = makeWarmController()
+        controller.cameraPresenceChanged(true)
+        scheduler.advance(by: 5)
+        #expect(runner.isReady)
+        // Débranchement : session perdue, mais rien à chercher sans caméra.
+        camera.isPresent = false
+        controller.cameraPresenceChanged(false)
+        runner.powerCycle()
+        scheduler.advance(by: 300)
+        #expect(runner.prewarms == 1)
+        #expect(!runner.isReady)
+        // Rebranchement : session neuve, préparée aussitôt.
+        camera.isPresent = true
+        controller.cameraPresenceChanged(true)
+        #expect(runner.prewarms == 2)
+        scheduler.advance(by: 5)
+        #expect(runner.isReady)
+        // Mise à jour d'obsbot-ai : l'utilitaire repart du nouveau programme.
+        controller.aiUpdated()
+        #expect(runner.prewarms == 3)
+        #expect(!runner.isReady)
+        scheduler.advance(by: 5)
+        #expect(runner.isReady)
+        #expect(runner.sessions == 3)
+    }
+
+    @Test("Toujours chaud : un utilitaire mort seul est relancé par la veille de ptzd, client ou non")
+    func warmWatchdog() {
+        let controller = makeWarmController()
+        controller.cameraPresenceChanged(true)
+        scheduler.advance(by: 5)
+        runner.idleStop()
+        #expect(!runner.isReady)
+        scheduler.advance(by: PTZController.warmCheckInterval + FakeAIRunner.loadTime + 0.1)
+        #expect(runner.isReady)
+        #expect(runner.sessions == 2)
+        // Un client qui se connecte le relance sans attendre la veille.
+        runner.idleStop()
+        controller.clientConnected()
+        scheduler.advance(by: FakeAIRunner.loadTime + 0.1)
+        #expect(runner.isReady)
+        #expect(runner.sessions == 3)
+    }
+
+    @Test("Toujours chaud : en vie privée aussi, un message d'un client prépare l'utilitaire ; caméra absente, jamais")
+    func warmInPrivacy() {
+        let controller = makeWarmController()
+        controller.cameraPresenceChanged(true)
+        _ = controller.handle(.privacy(on: true), from: 1)
+        let before = runner.prewarms
+        controller.prewarmAI()
+        #expect(runner.prewarms == before + 1)
+        camera.isPresent = false
+        controller.prewarmAI()
+        #expect(runner.prewarms == before + 1)
+    }
+
+    @Test("Pas toujours chaud (par défaut) : la présence de la caméra ne prépare rien, comme avant")
+    func notWarmByDefault() {
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        controller.aiUpdated()
+        scheduler.advance(by: 600)
+        #expect(runner.prewarms == 0)
+    }
+
+    @Test("I3 : sortie rapide, inclinaison du SDK illisible : rien n'est conclu, la position mémorisée est renvoyée et vérifiée")
+    func fastExitPitchUnreadable() {
+        let controller = ready()
+        enterNative(controller)
+        runner.pitchUnreadable = true
+        exit(controller)
+        #expect(!controller.snapshot.privacy)
+        // La relecture UVC seule ne suffit pas : renvoi, comme avant la sortie rapide.
+        #expect(camera.absoluteCommands == [Self.before])
+        #expect(log.lines.contains { $0.contains("inclinaison SDK illisible") && $0.contains("position mémorisée renvoyée") })
+        scheduler.advance(by: PrivacyReconciler.settleDelay)
+        #expect(camera.position == Self.before)
+        #expect(errors.values.isEmpty)
+    }
+
+    @Test("Journal du démarrage, mode natif retenu et caméra lue en vie privée : « état lu : privacy, rien à faire », aucun privacy on")
+    func startupLogsNativeState() {
+        store.state = PersistedState(privacy: true, saved: SavedPosition(pan: 12, tilt: 3, zoom: nil), native: true)
+        runner.state = .privacy
+        camera.position = Self.native
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        runner.answer(.status)
+        #expect(log.lines.contains { $0.contains("état lu : privacy, rien à faire") })
+        runner.autoReads = true
+        scheduler.advance(by: 600)
+        #expect(runner.privacyOrders.isEmpty)
+        #expect(camera.absoluteCommands.isEmpty)
+        // La relecture lente ne répète pas la ligne.
+        #expect(log.lines.filter { $0.contains("état lu :") }.count == 1)
+    }
+
+    @Test("Journal du démarrage, état dit par le témoin seul : « état lu : privacy (témoin) », toujours aucun privacy on")
+    func startupLogsWitnessedState() {
+        store.state = PersistedState(privacy: true, saved: SavedPosition(pan: 12, tilt: 3, zoom: nil), native: true)
+        runner.state = .privacy
+        runner.stateUnreadable = true
+        camera.position = Self.native
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        runner.answer(.status)
+        #expect(log.lines.contains { $0.contains("état lu : privacy (témoin), rien à faire") })
+        #expect(runner.privacyOrders.isEmpty)
+    }
+
+    @Test("Journal du démarrage, caméra lue éveillée : « état lu : run, reprotection », puis le mode natif")
+    func startupLogsAwakeState() {
+        store.state = PersistedState(privacy: true, saved: SavedPosition(pan: 12, tilt: 3, zoom: nil), native: true)
+        camera.position = PanTiltPosition(pan: 0, tilt: 0)
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        #expect(!log.lines.contains { $0.contains("état lu :") })
+        runner.answer(.status)
+        #expect(log.lines.contains { $0.contains("état lu : run, reprotection") })
+        #expect(runner.privacyOrders.isEmpty)
+        scheduler.advance(by: PrivacyReconciler.riseMargin)
+        runner.answer(.tracking(false))
+        #expect(runner.inFlight == .privacy(true))
+    }
+
+    @Test("Journal du démarrage, deux lectures ratées de suite : dit que l'état n'a pas été lu avant le privacy on de précaution")
+    func startupLogsUnreadableState() {
+        store.state = PersistedState(privacy: true, saved: SavedPosition(pan: 12, tilt: 3, zoom: nil), native: true)
+        runner.state = .privacy
+        camera.position = Self.native
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        runner.pitchUnreadable = true
+        runner.stateUnreadable = true
+        runner.answer(.status)
+        scheduler.advance(by: PrivacyReconciler.retryDelay)
+        runner.answer(.status)
+        scheduler.advance(by: PrivacyReconciler.retryDelay)
+        #expect(runner.inFlight == .privacy(true))
+        #expect(log.lines.contains { $0.contains("état réel illisible") })
+        #expect(log.lines.contains { $0.contains("état lu : illisible") && $0.contains("privacy on") })
+    }
+
 }
 
 /// États publiés (tests).
