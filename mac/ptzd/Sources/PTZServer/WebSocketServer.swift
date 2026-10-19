@@ -544,6 +544,9 @@ public final class WebSocketServer {
             unblock(deviceID, from: id)
         case .closePairing:
             closePairing()
+        case .aiUpdated:
+            // PTZBot a recompilé obsbot-ai : l'utilitaire repart du nouveau programme (spec § 6.5 bis).
+            controller.aiUpdated()
         default:
             break
         }

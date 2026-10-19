@@ -3,10 +3,14 @@ import Foundation
 /// Garde `obsbot-ai serve` lancé pendant qu'un client pilote : le SDK n'est chargé qu'une fois, et un ordre
 /// part en quelques millisecondes au lieu de 4 s. L'utilitaire s'arrête après `idleDelay` sans activité.
 ///
-/// Protocole : un ordre par ligne (`on`, `off`, `privacy on` ou `privacy off`) sur l'entrée de l'utilitaire. Sur sa sortie, les lignes
-/// préfixées par `obsbot-ai: ` sont des réponses (`ready` une fois le SDK prêt, puis `ok` ou `err <code>` par
-/// ordre) ; toute autre ligne est du bruit du SDK, ajouté au fichier de sortie. L'utilitaire se termine
-/// quand son entrée se ferme, ce qui arrive aussi si ptzd meurt.
+/// Protocole : un ordre par ligne (`on`, `off`, `privacy on`, `privacy off` ou `privacy status`) sur l'entrée de
+/// l'utilitaire. Sur sa sortie, les lignes préfixées par `obsbot-ai: ` sont des réponses (`ready` une fois le SDK prêt,
+/// puis `ok`, `ok <état>` pour `privacy status`, ou `err <code>` par ordre) ; toute autre ligne est du bruit du SDK,
+/// ajouté au fichier de sortie. L'utilitaire se termine quand son entrée se ferme, ce qui arrive aussi si ptzd meurt.
+///
+/// Un seul ordre à la fois : un ordre donné pendant un autre est refusé (`launchFailed`). `AIOrderQueue` les met à la
+/// file. `err 3` (« ordre inconnu ») vient d'un utilitaire plus ancien que ptzd : `unknownOrder`, et l'utilitaire est
+/// arrêté, pour que le suivant parte du programme recompilé (spec § 6.5 bis).
 @MainActor
 public final class ResidentAIRunner: AIRunner {
     /// Identité d'une extrémité de tuyau (fstat), pour vérifier en test qu'aucune ne fuit.
@@ -70,8 +74,14 @@ public final class ResidentAIRunner: AIRunner {
     private var stopping: Helper?
     /// Un lancement est demandé alors que `stopping` n'a pas fini.
     private var wanted = false
+    /// Réponse de l'utilitaire à un ordre : `ok`, avec l'état lu pour `privacy status`, ou l'échec.
+    private enum Reply {
+        case ok(String?)
+        case failed(AIResult)
+    }
+
     /// Ordre en attente que l'utilitaire soit prêt, puis en cours.
-    private var order: (order: AIOrder, completion: @MainActor @Sendable (AIResult) -> Void, sent: Bool)?
+    private var order: (order: AIOrder, completion: @MainActor @Sendable (Reply) -> Void, sent: Bool)?
     /// Du lancement à « ready » : le SDK met environ 4 s, 10 s de recherche de la caméra au pire.
     private var startTimer: (any Cancellable)?
     /// De l'écriture de l'ordre à sa réponse.
@@ -125,11 +135,35 @@ public final class ResidentAIRunner: AIRunner {
     }
 
     public func run(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
-        submit(.tracking(on: on), completion: completion)
+        submit(.tracking(on: on)) { completion(Self.result(of: $0)) }
     }
 
     public func runPrivacy(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
-        submit(.privacy(on: on), completion: completion)
+        submit(.privacy(on: on)) { completion(Self.result(of: $0)) }
+    }
+
+    /// `privacy status` : « ok run », « ok privacy » ou « ok sleep ». Un autre mot est un échec, jamais un état deviné.
+    public func readPrivacy(completion: @escaping @MainActor @Sendable (PrivacyReading) -> Void) {
+        submit(.privacyStatus) { [weak self] reply in
+            switch reply {
+            case let .ok(word):
+                if let word, let state = CameraRunState(rawValue: word) {
+                    completion(.state(state))
+                } else {
+                    self?.log("obsbot-ai : état illisible (« \(word ?? "") »).")
+                    completion(.failed(.sdkError))
+                }
+            case let .failed(result):
+                completion(.failed(result))
+            }
+        }
+    }
+
+    private static func result(of reply: Reply) -> AIResult {
+        switch reply {
+        case .ok: .success
+        case let .failed(result): result
+        }
     }
 
     /// Sans l'utilitaire installé (pas de SDK), la vie privée native n'existe pas (spec § 6.5 bis).
@@ -137,9 +171,9 @@ public final class ResidentAIRunner: AIRunner {
         FileManager.default.isExecutableFile(atPath: executableURL.path)
     }
 
-    private func submit(_ newOrder: AIOrder, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+    private func submit(_ newOrder: AIOrder, completion: @escaping @MainActor @Sendable (Reply) -> Void) {
         guard order == nil else {
-            completion(.launchFailed("ordre de suivi IA précédent encore en cours"))
+            completion(.failed(.launchFailed("ordre précédent encore en cours")))
             return
         }
         restartIdleTimer()
@@ -157,7 +191,7 @@ public final class ResidentAIRunner: AIRunner {
     public func reset() {
         noPrewarmUntil = nil
         stopHelper(terminate: false)
-        finish(.launchFailed("utilitaire réinitialisé"))
+        fail(.launchFailed("utilitaire réinitialisé"))
     }
 
     /// Arrête l'utilitaire (fermeture de son entrée) ; un ordre en cours échoue.
@@ -165,7 +199,7 @@ public final class ResidentAIRunner: AIRunner {
         idleTimer?.cancel()
         idleTimer = nil
         stopHelper(terminate: false)
-        finish(.launchFailed("ptzd s'arrête"))
+        fail(.launchFailed("ptzd s'arrête"))
     }
 
     // MARK: - Cycle de vie de l'utilitaire
@@ -206,7 +240,7 @@ public final class ResidentAIRunner: AIRunner {
         } catch {
             try? helper.log?.close()
             noPrewarmUntil = scheduler.now + Self.backoff
-            finish(.launchFailed(error.localizedDescription))
+            fail(.launchFailed(error.localizedDescription))
             return
         }
         // Écrire dans un tuyau dont l'utilitaire est mort ne doit pas tuer ptzd (pas de SIGPIPE).
@@ -295,17 +329,27 @@ public final class ResidentAIRunner: AIRunner {
         case "ok":
             source.served = true
             noPrewarmUntil = nil
-            finish(.success)
+            finish(.ok(nil))
+        case _ where reply.hasPrefix("ok "):
+            // `privacy status` : l'état suit « ok ».
+            source.served = true
+            noPrewarmUntil = nil
+            finish(.ok(String(reply.dropFirst(3))))
         default:
             let code = Int32(reply.split(separator: " ").last ?? "") ?? -1
             if code == 1 {
                 // Caméra introuvable : l'utilitaire sort de lui-même.
-                finish(.cameraNotFound)
+                fail(.cameraNotFound)
             } else {
-                // Session du SDK douteuse : la prochaine fois, un utilitaire neuf. L'arrêt vient avant la
-                // réponse, pour qu'un ordre donné par le rappel parte sur le nouveau.
+                // Session du SDK douteuse, ou utilitaire plus ancien que l'ordre (code 3) : la prochaine fois, un
+                // utilitaire neuf, lancé depuis le programme (peut-être recompilé entre-temps). L'arrêt vient avant
+                // la réponse, pour qu'un ordre donné par le rappel parte sur le nouveau.
                 stopHelper(terminate: false)
-                finish(code == 2 ? .sdkError : .unexpectedExit(code))
+                switch code {
+                case 2: fail(.sdkError)
+                case 3: fail(.unknownOrder)
+                default: fail(.unexpectedExit(code))
+                }
             }
         }
     }
@@ -318,10 +362,12 @@ public final class ResidentAIRunner: AIRunner {
         } catch {
             log("obsbot-ai : écriture de l'ordre impossible (\(error)).")
             stopHelper(terminate: false)
-            finish(.unexpectedExit(-1))
+            fail(.unexpectedExit(-1))
             return
         }
         orderTimer?.cancel()
+        // La bascule de la vie privée native fait bouger la caméra ; la lecture de l'état est aussi rapide qu'un
+        // changement de suivi.
         let timeout: TimeInterval = if case .privacy = current.order { privacyOrderTimeout } else { orderTimeout }
         orderTimer = scheduler.schedule(after: timeout) { [weak self] in
             self?.expired(waitingFor: "réponse")
@@ -340,7 +386,7 @@ public final class ResidentAIRunner: AIRunner {
         log("obsbot-ai : pas de \(what) à temps.")
         noPrewarmUntil = scheduler.now + Self.backoff
         stopHelper(terminate: true)
-        finish(.timeout)
+        fail(.timeout)
     }
 
     private func outputClosed(_ closed: Helper) {
@@ -384,7 +430,7 @@ public final class ResidentAIRunner: AIRunner {
                 noPrewarmUntil = scheduler.now + Self.backoff
             }
             // Le 1 n'est « caméra introuvable » que pour une vraie sortie : un SIGHUP vaut aussi 1.
-            finish(ended.exitedNormally && status == 1 ? .cameraNotFound : .unexpectedExit(status))
+            fail(ended.exitedNormally && status == 1 ? .cameraNotFound : .unexpectedExit(status))
         } else if ended === stopping {
             stopping = nil
             if wanted {
@@ -427,12 +473,16 @@ public final class ResidentAIRunner: AIRunner {
         }
     }
 
-    private func finish(_ result: AIResult) {
+    private func finish(_ reply: Reply) {
         guard let current = order else { return }
         order = nil
         orderTimer?.cancel()
         orderTimer = nil
-        current.completion(result)
+        current.completion(reply)
+    }
+
+    private func fail(_ result: AIResult) {
+        finish(.failed(result))
     }
 
     private func restartIdleTimer() {

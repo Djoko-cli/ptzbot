@@ -25,6 +25,9 @@ public final class ControlTaker {
     private var retried = false
     private var explicitOrder = false
     private var cutPending = false
+    /// Change à chaque `reset` : la réponse d'un ordre donné à l'utilitaire d'avant ne vaut plus rien.
+    private var generation = 0
+    private var retryTimer: (any Cancellable)?
 
     public init(
         runner: any AIRunner,
@@ -63,8 +66,14 @@ public final class ControlTaker {
         state = .taking
         onChange?()
         explicitOrder = true
+        let ticket = generation
         runner.run(on: on) { [weak self] result in
             guard let self else { return }
+            guard ticket == generation else {
+                // Utilitaire réinitialisé pendant l'ordre : l'échec est rendu, l'état a déjà été remis.
+                completion(result)
+                return
+            }
             if result == .success {
                 tracking = on ? .on : .off
                 state = on ? .idle : .ready
@@ -89,8 +98,18 @@ public final class ControlTaker {
         runner.prewarm()
     }
 
-    /// La caméra a été branchée ou débranchée : l'utilitaire du suivi IA repart d'une session neuve.
+    /// La caméra a été branchée ou débranchée, ou obsbot-ai recompilé : l'utilitaire du suivi IA repart d'une session
+    /// neuve. Une coupure en cours est abandonnée sans nouvel essai (elle visait l'ancienne session) ; le suivi garde
+    /// son dernier état connu. L'appelant publie l'état (pas de `onChange` ici : ce n'est pas la fin d'une coupure).
     public func reset() {
+        generation += 1
+        retryTimer?.cancel()
+        retryTimer = nil
+        cutPending = false
+        explicitOrder = false
+        if state == .taking {
+            state = .idle
+        }
         runner.reset()
     }
 
@@ -102,8 +121,10 @@ public final class ControlTaker {
     }
 
     private func launch() {
+        let ticket = generation
         runner.run(on: false) { [weak self] result in
-            self?.finish(result)
+            guard let self, ticket == generation else { return }
+            finish(result)
         }
     }
 
@@ -118,7 +139,8 @@ public final class ControlTaker {
         guard retried else {
             retried = true
             log("obsbot-ai off a échoué (\(result)) : nouvel essai dans \(Int(Self.retryDelay)) s.")
-            scheduler.schedule(after: Self.retryDelay) { [weak self] in
+            retryTimer = scheduler.schedule(after: Self.retryDelay) { [weak self] in
+                self?.retryTimer = nil
                 self?.launch()
             }
             return

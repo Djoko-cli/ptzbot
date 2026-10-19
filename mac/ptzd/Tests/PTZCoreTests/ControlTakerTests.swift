@@ -166,6 +166,45 @@ struct ControlTakerTests {
         #expect(taker.tracking == .off)
         #expect(results.values == [.success])
     }
+
+    @Test("reset pendant une coupure : abandonnée sans nouvel essai, état idle, le suivi garde son dernier état connu")
+    func resetDuringCut() {
+        let taker = makeTaker()
+        taker.take()
+        #expect(taker.state == .taking)
+        taker.reset()
+        #expect(runner.resets == 1)
+        #expect(taker.state == .idle)
+        #expect(taker.tracking == .unknown)
+        scheduler.advance(by: 60)
+        #expect(runner.runCount == 1)
+        // Une nouvelle coupure repart normalement.
+        taker.take()
+        runner.finish(.success)
+        #expect(taker.state == .ready)
+    }
+
+    @Test("reset pendant un nouvel essai en attente : l'essai n'a pas lieu")
+    func resetCancelsRetry() {
+        let taker = makeTaker()
+        taker.take()
+        runner.finish(.sdkError)
+        taker.reset()
+        scheduler.advance(by: ControlTaker.retryDelay)
+        #expect(runner.runCount == 1)
+        #expect(taker.state == .idle)
+    }
+
+    @Test("reset pendant un ordre explicite : l'échec est rendu au demandeur, l'état a été remis")
+    func resetDuringExplicitOrder() {
+        let taker = makeTaker()
+        let results = ResultBox()
+        taker.setTracking(on: true) { results.values.append($0) }
+        taker.reset()
+        #expect(results.values == [.launchFailed("utilitaire réinitialisé")])
+        #expect(taker.state == .idle)
+        #expect(taker.tracking == .unknown)
+    }
 }
 
 /// Résultats reçus par les rappels (tests).

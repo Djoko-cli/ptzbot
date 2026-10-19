@@ -46,6 +46,12 @@ private final class Outcome {
     var value: AIResult?
 }
 
+/// Résultat d'une lecture de l'état réel.
+@MainActor
+private final class ReadingOutcome {
+    var value: PrivacyReading?
+}
+
 /// Réponse « ok » à chaque ordre, après un démarrage de 0,2 s qui laisse passer du bruit sur les deux sorties.
 private let answering = """
     echo "bruit du SDK"
@@ -144,15 +150,15 @@ struct ResidentAIRunnerTests {
         await cleanUp(runner, serve)
     }
 
-    @Test("err 3 : même arrêt, processus neuf ensuite")
+    @Test("err 3 : ordre inconnu (utilitaire plus ancien que ptzd), même arrêt, processus neuf ensuite")
     func badOrder() async throws {
         let serve = try FakeServe("""
             echo "obsbot-ai: ready"
             while read order; do echo "obsbot-ai: err 3"; done
             """)
         let runner = runner(serve, scheduler: DispatchScheduler())
-        #expect(await order(runner) == .unexpectedExit(3))
-        #expect(await order(runner) == .unexpectedExit(3))
+        #expect(await order(runner) == .unknownOrder)
+        #expect(await order(runner) == .unknownOrder)
         #expect(serve.starts.count == 2)
         await cleanUp(runner, serve)
     }
@@ -294,7 +300,7 @@ struct ResidentAIRunnerTests {
         let runner = runner(serve, scheduler: DispatchScheduler())
         let first = Outcome()
         runner.run(on: true) { first.value = $0 }
-        #expect(await order(runner, on: false) == .launchFailed("ordre de suivi IA précédent encore en cours"))
+        #expect(await order(runner, on: false) == .launchFailed("ordre précédent encore en cours"))
         #expect(await eventually { first.value != nil })
         #expect(first.value == .success)
         #expect(serve.starts.count == 1)
@@ -629,6 +635,67 @@ struct ResidentAIRunnerTests {
         #expect(outcome.value == nil)
         scheduler.advance(by: 0.2)
         #expect(outcome.value == .timeout)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("privacy status : « ok privacy », « ok run », « ok sleep » se lisent tels quels, sur le même processus")
+    func privacyStatus() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            for state in privacy run sleep; do
+                read order
+                echo "$order" >> "$dir/orders"
+                echo "obsbot-ai: ok $state"
+            done
+            while read order; do echo "obsbot-ai: ok"; done
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        var readings: [PrivacyReading] = []
+        for _ in 0..<3 {
+            let outcome = ReadingOutcome()
+            runner.readPrivacy { outcome.value = $0 }
+            _ = await eventually { outcome.value != nil }
+            readings.append(outcome.value ?? .failed(.timeout))
+        }
+        #expect(readings == [.state(.privacy), .state(.run), .state(.sleep)])
+        #expect(serve.orders == ["privacy status", "privacy status", "privacy status"])
+        #expect(serve.starts.count == 1)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("privacy status : un mot inconnu est un échec, jamais un état deviné ; err 3 : ordre inconnu")
+    func privacyStatusUnreadable() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            read order
+            echo "obsbot-ai: ok flou"
+            read order
+            echo "obsbot-ai: err 3"
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let first = ReadingOutcome()
+        runner.readPrivacy { first.value = $0 }
+        _ = await eventually { first.value != nil }
+        #expect(first.value == .failed(.sdkError))
+        let second = ReadingOutcome()
+        runner.readPrivacy { second.value = $0 }
+        _ = await eventually { second.value != nil }
+        #expect(second.value == .failed(.unknownOrder))
+        await cleanUp(runner, serve)
+    }
+
+    @Test("privacy status a 5 s pour répondre, comme un ordre de suivi")
+    func privacyStatusTimeout() async throws {
+        let serve = try FakeServe(Self.silentThenAnswering)
+        let scheduler = FakeScheduler()
+        let runner = runner(serve, scheduler: scheduler)
+        let outcome = ReadingOutcome()
+        runner.readPrivacy { outcome.value = $0 }
+        #expect(await eventually { serve.orders.count == 1 })
+        scheduler.advance(by: 4.9)
+        #expect(outcome.value == nil)
+        scheduler.advance(by: 0.2)
+        #expect(outcome.value == .failed(.timeout))
         await cleanUp(runner, serve)
     }
 
