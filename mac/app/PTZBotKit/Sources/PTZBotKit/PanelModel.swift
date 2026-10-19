@@ -33,6 +33,8 @@ public final class PanelModel {
     @ObservationIgnored private let scheduler: any Scheduler
     @ObservationIgnored private var retry: (any Cancellable)?
     @ObservationIgnored private var started = false
+    /// `aiUpdated` attend la prochaine connexion à ptzd.
+    @ObservationIgnored private var aiUpdatePending = false
 
     public init(config: PTZDConfig, transport: any AdminTransport, scheduler: any Scheduler) {
         self.config = config
@@ -80,6 +82,23 @@ public final class PanelModel {
 
     public func revoke(_ deviceID: String) {
         send(.revoke(deviceID: deviceID))
+    }
+
+    /// PTZBot a recompilé ou réinstallé obsbot-ai : ptzd relance son utilitaire (spec § 6.5 bis). Sans connexion, le
+    /// message part dès la prochaine ; il n'efface pas le dernier refus affiché.
+    public func aiUpdated() {
+        guard service == .active else {
+            aiUpdatePending = true
+            return
+        }
+        sendAIUpdated()
+    }
+
+    private func sendAIUpdated() {
+        aiUpdatePending = false
+        if let text = try? NacelleCodec.encode(ClientMessage.aiUpdated) {
+            transport.send(text)
+        }
     }
 
     /// Ouvre un appairage : la fenêtre du QR suit `pairing`.
@@ -149,6 +168,9 @@ public final class PanelModel {
             service = .active
             if let text = try? NacelleCodec.encode(ClientMessage.adminWatch) {
                 transport.send(text)
+            }
+            if aiUpdatePending {
+                sendAIUpdated()
             }
         case let .state(snapshot):
             state = snapshot

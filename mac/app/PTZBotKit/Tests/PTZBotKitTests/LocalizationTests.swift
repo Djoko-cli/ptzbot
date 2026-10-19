@@ -114,23 +114,50 @@ struct LocalizationTests {
         #expect(english.allSatisfy { $0.hasPrefix("AI tracking unchanged: ") })
     }
 
-    @Test("Vie privée native : sous-titre, notes du mode tilt et messages d'échec de ptzd, en français et en anglais")
+    @Test("Vie privée native : sous-titre selon l'état réel, notes selon la raison de ptzd, messages d'échec, en français et en anglais")
     func privacyTexts() {
-        #expect(inLanguage("fr") { Labels.privacySubtitle } == "Coupe l'image et le micro de la caméra")
-        #expect(inLanguage("en") { Labels.privacySubtitle } == "Turns off the camera's image and microphone")
-        // Seul le mode tilt a une note ; natif, ptzd ancien et hors vie privée n'en ont pas.
-        #expect(Labels.privacyNote(.native, needsSDK: false) == nil)
-        #expect(Labels.privacyNote(nil, needsSDK: true) == nil)
-        #expect(inLanguage("fr") { Labels.privacyNote(.tilt, needsSDK: true) } == "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.")
-        #expect(inLanguage("en") { Labels.privacyNote(.tilt, needsSDK: true) } == "Without the OBSBOT SDK, privacy only turns the lens away: the image and microphone are not turned off.")
-        // SDK installé mais mode natif échoué : la note du repli, pas « sans le SDK ».
-        #expect(inLanguage("fr") { Labels.privacyNote(.tilt, needsSDK: false) } == PrivacyFailureText.fallbackToTilt)
-        #expect(inLanguage("en") { Labels.privacyNote(.tilt, needsSDK: false) } == "Privacy could not turn off the camera's image or microphone: the lens is only turned away.")
+        // Sous-titre : ce qui tient en vie privée (natif constaté seulement), ce qu'elle fera sinon (SDK prêt seulement).
+        #expect(inLanguage("fr") { Labels.privacySubtitle(active: false, mode: nil, sdkReady: true) } == "Coupe l'image et le micro de la caméra")
+        #expect(inLanguage("en") { Labels.privacySubtitle(active: false, mode: nil, sdkReady: true) } == "Turns off the camera's image and microphone")
+        #expect(inLanguage("fr") { Labels.privacySubtitle(active: false, mode: nil, sdkReady: false) } == "Détourne l'objectif de la caméra")
+        #expect(inLanguage("en") { Labels.privacySubtitle(active: false, mode: nil, sdkReady: false) } == "Turns the camera's lens away")
+        #expect(inLanguage("fr") { Labels.privacySubtitle(active: true, mode: .native, sdkReady: true) } == "Image et micro coupés")
+        #expect(inLanguage("en") { Labels.privacySubtitle(active: true, mode: .native, sdkReady: true) } == "Image and microphone off")
+        for mode in [PrivacyMode.tilt, nil] {
+            #expect(inLanguage("fr") { Labels.privacySubtitle(active: true, mode: mode, sdkReady: true) } == "Objectif détourné")
+            #expect(inLanguage("en") { Labels.privacySubtitle(active: true, mode: mode, sdkReady: true) } == "Lens turned away")
+        }
+        // Notes : seul le mode tilt avec une raison en a une ; natif, mode natif en cours et ptzd ancien n'en ont pas.
+        #expect(Labels.privacyNote(mode: .native, reason: nil, sdk: .ready) == nil)
+        #expect(Labels.privacyNote(mode: .tilt, reason: nil, sdk: .ready) == nil)
+        #expect(Labels.privacyNote(mode: nil, reason: nil, sdk: .absent) == nil)
+        #expect(inLanguage("fr") { Labels.privacyNote(mode: .tilt, reason: .noSDK, sdk: .absent) } == "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.")
+        #expect(inLanguage("en") { Labels.privacyNote(mode: .tilt, reason: .noSDK, sdk: .absent) } == "Without the OBSBOT SDK, privacy only turns the lens away: the image and microphone are not turned off.")
+        #expect(inLanguage("fr") { Labels.privacyNote(mode: .tilt, reason: .failed, sdk: .ready) } == PrivacyFailureText.fallbackToTilt)
+        #expect(inLanguage("en") { Labels.privacyNote(mode: .tilt, reason: .failed, sdk: .ready) } == "Privacy could not turn off the camera's image or microphone: the lens is only turned away.")
+        // obsbot-ai à recompiler : en cours (ou fini, ptzd pas encore prévenu), outils manquants, compilation échouée.
+        for sdk in [SDKStatus.recompiling, .ready, nil] {
+            #expect(inLanguage("fr") { Labels.privacyNote(mode: .tilt, reason: .updating, sdk: sdk) } == "Mise à jour du SDK OBSBOT en cours : la vie privée détourne seulement l'objectif pour l'instant.")
+            #expect(inLanguage("en") { Labels.privacyNote(mode: .tilt, reason: .updating, sdk: sdk) } == "OBSBOT SDK update in progress: for now, privacy only turns the lens away.")
+        }
+        #expect(inLanguage("fr") { Labels.privacyNote(mode: .tilt, reason: .updating, sdk: .toolsRequired(fallback: true)) } == "obsbot-ai doit être recompilé : installez les outils de développement d'Apple pour que la vie privée coupe l'image et le micro. En attendant, elle détourne seulement l'objectif.")
+        #expect(inLanguage("en") { Labels.privacyNote(mode: .tilt, reason: .updating, sdk: .toolsRequired(fallback: true)) } == "obsbot-ai must be recompiled: install Apple's developer tools so that privacy turns off the image and microphone. Until then, it only turns the lens away.")
+        #expect(inLanguage("fr") { Labels.privacyNote(mode: .tilt, reason: .updating, sdk: .compileFailed(fallback: true)) } == "La recompilation d'obsbot-ai a échoué : la vie privée détourne seulement l'objectif. Le détail est dans le journal obsbot-ai-compilation.log.")
+        #expect(inLanguage("en") { Labels.privacyNote(mode: .tilt, reason: .updating, sdk: .compileFailed(fallback: true)) } == "obsbot-ai could not be recompiled: privacy only turns the lens away. Details are in the obsbot-ai-compilation.log log.")
+        // Le lien vers les outils de développement : seulement quand ils manquent pour recompiler obsbot-ai.
+        #expect(Labels.privacyNeedsTools(mode: .tilt, reason: .updating, sdk: .toolsRequired(fallback: true)))
+        #expect(!Labels.privacyNeedsTools(mode: .tilt, reason: .updating, sdk: .recompiling))
+        #expect(!Labels.privacyNeedsTools(mode: .tilt, reason: .noSDK, sdk: .toolsRequired(fallback: false)))
+        #expect(!Labels.privacyNeedsTools(mode: .native, reason: nil, sdk: .toolsRequired(fallback: true)))
         // Les deux messages que ptzd envoie en uvcFailed sont traduits ; jamais le texte de ptzd en anglais.
         #expect(inLanguage("fr") { ErrorTexts.text(for: .uvcFailed, message: PrivacyFailureText.fallbackToTilt) } == PrivacyFailureText.fallbackToTilt)
         #expect(inLanguage("en") { ErrorTexts.text(for: .uvcFailed, message: PrivacyFailureText.fallbackToTilt) } == "Privacy could not turn off the camera's image or microphone: the lens is only turned away.")
         #expect(inLanguage("fr") { ErrorTexts.text(for: .uvcFailed, message: PrivacyFailureText.exitFailed) } == PrivacyFailureText.exitFailed)
         #expect(inLanguage("en") { ErrorTexts.text(for: .uvcFailed, message: PrivacyFailureText.exitFailed) } == "Privacy could not be turned off: the camera did not respond.")
+        // Motif « ordre inconnu » d'un obsbot-ai ancien.
+        let unknown = AIFailureText.message(motive: AIFailureText.unknownOrder)
+        #expect(inLanguage("fr") { ErrorTexts.text(for: .uvcFailed, message: unknown) } == "Suivi IA non modifié : obsbot-ai n'est pas à jour.")
+        #expect(inLanguage("en") { ErrorTexts.text(for: .uvcFailed, message: unknown) } == "AI tracking unchanged: obsbot-ai is out of date.")
     }
 
     /// Les clés de `Localization.text("…")` dans les sources de PTZBotKit, chaque interpolation devenue `%lld`

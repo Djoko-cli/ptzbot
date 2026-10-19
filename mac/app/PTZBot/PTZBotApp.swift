@@ -106,7 +106,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.reloadConfig(.load(from: paths.config))
         }
         sdkWindow.onInstalled = { [controller] in
-            Task { await controller.refreshSDK() }
+            Task { await controller.sdkInstalled() }
+        }
+        // obsbot-ai recompilé ou réinstallé : ptzd relance son utilitaire (spec § 6.5 bis).
+        controller.onAIUpdated = { [panel] in
+            panel.aiUpdated()
         }
     }
 

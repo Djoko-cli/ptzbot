@@ -37,6 +37,14 @@ struct PanelView: View {
         Labels.aiNeedsSDK(app.sdkStatus, legacy: legacy)
     }
 
+    /// Sous « Vie privée » : ce qui tient (en vie privée) ou ce qu'elle fera (spec § 6.5 bis). L'ancienne installation n'a
+    /// pas de mode natif.
+    private var privacySubtitle: String {
+        let state = model.state
+        return Labels.privacySubtitle(active: state?.privacy ?? false, mode: state?.privacyMode,
+                                      sdkReady: !legacy && app.sdkStatus == .ready)
+    }
+
     /// Le lien vers l'onglet « SDK OBSBOT » : pas quand l'état n'est pas encore lu, ni pendant la recompilation.
     private var aiSDKLink: Bool {
         Labels.aiSDKLink(app.sdkStatus, toolsAvailable: app.toolsAvailable ?? true, legacy: legacy)
@@ -226,15 +234,25 @@ struct PanelView: View {
 
     private var cameraSection: some View {
         PanelSection(Labels.cameraSection(model.state?.camera)) {
-            PanelRow(icon: "eye.slash", title: AppText.text("Vie privée"), subtitle: Labels.privacySubtitle) {
+            PanelRow(icon: "eye.slash", title: AppText.text("Vie privée"), subtitle: privacySubtitle) {
                 Toggle(AppText.text("Vie privée"), isOn: Binding(get: { model.state?.privacy ?? false }, set: { model.setPrivacy($0) }))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
             } notes: {
-                // Mode `tilt` : l'objectif est détourné, mais l'image et le micro ne sont pas coupés (spec § 6.5 bis).
-                if let note = Labels.privacyNote(model.state?.privacyMode, needsSDK: aiNeedsSDK) {
+                // Mode `tilt` : l'objectif est détourné, mais l'image et le micro ne sont pas coupés ; la raison vient de
+                // ptzd (spec § 6.5 bis).
+                let mode = model.state?.privacyMode
+                let reason = model.state?.privacyReason
+                if let note = Labels.privacyNote(mode: mode, reason: reason, sdk: legacy ? nil : app.sdkStatus) {
                     PanelNote(note, color: .orange)
+                }
+                if !legacy, Labels.privacyNeedsTools(mode: mode, reason: reason, sdk: app.sdkStatus) {
+                    Button(Labels.installTools) {
+                        app.installDeveloperTools()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
                 }
             }
             Divider()

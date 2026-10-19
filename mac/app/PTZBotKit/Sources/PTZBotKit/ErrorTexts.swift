@@ -45,6 +45,8 @@ public enum ErrorTexts {
         case sdkError
         case timeout
         case launchFailed
+        /// obsbot-ai d'avant cet ordre : il attend sa recompilation.
+        case unknownOrder
         case unexpectedExit(String)
         /// Un message du suivi IA au motif inconnu (version de ptzd plus récente).
         case other
@@ -59,6 +61,7 @@ public enum ErrorTexts {
         case AIFailureText.sdkError: return .sdkError
         case AIFailureText.timeout: return .timeout
         case AIFailureText.launchFailed: return .launchFailed
+        case AIFailureText.unknownOrder: return .unknownOrder
         default:
             if motive.hasPrefix(AIFailureText.unexpectedExitPrefix) {
                 let status = String(motive.dropFirst(AIFailureText.unexpectedExitPrefix.count))
@@ -80,6 +83,8 @@ public enum ErrorTexts {
             Localization.text("Suivi IA non modifié : délai dépassé.")
         case .launchFailed:
             Localization.text("Suivi IA non modifié : obsbot-ai n'a pas pu être lancé.")
+        case .unknownOrder:
+            Localization.text("Suivi IA non modifié : obsbot-ai n'est pas à jour.")
         case let .unexpectedExit(code):
             Localization.text("Suivi IA non modifié : obsbot-ai s'est arrêté avec le code \(code).")
         case .other:

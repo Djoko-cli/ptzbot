@@ -1854,6 +1854,125 @@
         }
       }
     },
+    "Image et micro coupés": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image and microphone off"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image et micro coupés"
+          }
+        }
+      }
+    },
+    "Objectif détourné": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lens turned away"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Objectif détourné"
+          }
+        }
+      }
+    },
+    "Détourne l'objectif de la caméra": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turns the camera's lens away"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Détourne l'objectif de la caméra"
+          }
+        }
+      }
+    },
+    "obsbot-ai doit être recompilé : installez les outils de développement d'Apple pour que la vie privée coupe l'image et le micro. En attendant, elle détourne seulement l'objectif.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "obsbot-ai must be recompiled: install Apple's developer tools so that privacy turns off the image and microphone. Until then, it only turns the lens away."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "obsbot-ai doit être recompilé : installez les outils de développement d'Apple pour que la vie privée coupe l'image et le micro. En attendant, elle détourne seulement l'objectif."
+          }
+        }
+      }
+    },
+    "La recompilation d'obsbot-ai a échoué : la vie privée détourne seulement l'objectif. Le détail est dans le journal obsbot-ai-compilation.log.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "obsbot-ai could not be recompiled: privacy only turns the lens away. Details are in the obsbot-ai-compilation.log log."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La recompilation d'obsbot-ai a échoué : la vie privée détourne seulement l'objectif. Le détail est dans le journal obsbot-ai-compilation.log."
+          }
+        }
+      }
+    },
+    "Mise à jour du SDK OBSBOT en cours : la vie privée détourne seulement l'objectif pour l'instant.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OBSBOT SDK update in progress: for now, privacy only turns the lens away."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mise à jour du SDK OBSBOT en cours : la vie privée détourne seulement l'objectif pour l'instant."
+          }
+        }
+      }
+    },
+    "Suivi IA non modifié : obsbot-ai n'est pas à jour.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI tracking unchanged: obsbot-ai is out of date."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suivi IA non modifié : obsbot-ai n'est pas à jour."
+          }
+        }
+      }
+    },
     "Tailscale": {
       "extractionState": "manual",
       "localizations": {
