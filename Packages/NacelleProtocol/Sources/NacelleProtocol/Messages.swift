@@ -34,6 +34,9 @@ public enum ClientMessage: Equatable, Sendable {
     /// L'iPhone oublie son appairage : ptzd retire cet appareil de sa liste et coupe ses connexions.
     /// Accepté d'un iPhone authentifié seulement.
     case forgetMe
+    /// PTZBot a recompilé ou réinstallé obsbot-ai : ptzd redémarre son utilitaire et réconcilie la vie privée
+    /// (spec § 6.5 bis). 127.0.0.1 seulement.
+    case aiUpdated
 }
 
 /// Présence de la caméra côté Mac.
@@ -76,10 +79,22 @@ public enum VoiceFrame {
 
 /// Façon dont la vie privée est tenue (spec § 6.5 bis).
 public enum PrivacyMode: String, Codable, Sendable {
-    /// Mode vie privée de l'OBSBOT : image noire et micro coupé.
+    /// Mode vie privée de l'OBSBOT, constaté par une lecture de l'état réel de la caméra : image noire et micro coupé.
     case native
-    /// Repli : objectif incliné vers le bas, sans coupure de l'image ni du micro.
+    /// Protection à −70° seule : objectif incliné vers le bas, sans coupure de l'image ni du micro. Aussi pendant que le
+    /// mode natif est en cours, tant qu'il n'est pas confirmé.
     case tilt
+}
+
+/// Pourquoi la vie privée ne tient que par l'inclinaison (`privacyMode` `tilt`, spec § 6.5 bis). Absente pendant que le
+/// mode natif est en cours.
+public enum PrivacyReason: String, Codable, Sendable {
+    /// Pas d'obsbot-ai (SDK absent) : la vie privée n'a que l'inclinaison.
+    case noSDK
+    /// obsbot-ai est d'avant la vie privée V2 (« ordre inconnu ») : PTZBot doit le recompiler.
+    case updating
+    /// Le mode natif a échoué deux fois, ou l'état réel de la caméra ne se lit pas.
+    case failed
 }
 
 /// Avancement de la coupure du suivi IA (prise en main).
@@ -122,6 +137,8 @@ public enum AIFailureText {
     public static let sdkError = "erreur du SDK OBSBOT"
     public static let timeout = "délai dépassé"
     public static let launchFailed = "l'utilitaire n'a pas pu être lancé"
+    /// obsbot-ai d'avant cet ordre (réponse « ordre inconnu », code 3) : il attend sa recompilation.
+    public static let unknownOrder = "l'utilitaire n'est pas à jour"
     /// Suivi du code de sortie.
     public static let unexpectedExitPrefix = "l'utilitaire s'est arrêté avec le code "
 
@@ -142,7 +159,7 @@ public enum AIFailureText {
 public enum PrivacyFailureText {
     /// Repli sur l'inclinaison : l'image et le micro ne sont pas coupés.
     public static let fallbackToTilt = "La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné."
-    /// La caméra n'a pas quitté sa vie privée native après deux essais : la vie privée reste active.
+    /// La caméra ne s'est pas réveillée (ou son état ne se lit pas) après deux essais : la vie privée reste active.
     public static let exitFailed = "La vie privée n'a pas pu être levée : la caméra n'a pas répondu."
 }
 
@@ -153,6 +170,8 @@ public struct StateSnapshot: Equatable, Sendable {
     public var privacy: Bool
     /// Mode de la vie privée en cours ; nil hors vie privée, et chez un ptzd d'avant la vie privée V2 (spec § 6.5 bis).
     public var privacyMode: PrivacyMode?
+    /// En mode `tilt`, pourquoi le mode natif ne tient pas ; nil pendant qu'il est en cours, et hors du mode `tilt`.
+    public var privacyReason: PrivacyReason?
     /// Degrés, ou nil si inconnus.
     public var pan: Double?
     /// Degrés, ou nil si inconnus.
@@ -174,7 +193,8 @@ public struct StateSnapshot: Equatable, Sendable {
         moving: Bool,
         aiTracking: AITracking = .unknown,
         talkback: TalkbackAvailability = .unavailable,
-        privacyMode: PrivacyMode? = nil
+        privacyMode: PrivacyMode? = nil,
+        privacyReason: PrivacyReason? = nil
     ) {
         self.camera = camera
         self.control = control
@@ -186,6 +206,7 @@ public struct StateSnapshot: Equatable, Sendable {
         self.aiTracking = aiTracking
         self.talkback = talkback
         self.privacyMode = privacyMode
+        self.privacyReason = privacyReason
     }
 }
 

@@ -157,7 +157,8 @@ public final class PTZController {
                 self?.onClientError?(client, .uvcFailed, AIFailureText.message(motive: result.userDescription))
             }
             return nil
-        case .pair, .openPairing, .auth, .webrtcOffer, .adminWatch, .revoke, .kick, .unblock, .closePairing, .forgetMe:
+        case .pair, .openPairing, .auth, .webrtcOffer, .adminWatch, .revoke, .kick, .unblock, .closePairing, .forgetMe,
+             .aiUpdated:
             // Messages de session et d'administration : le serveur les traite et ne les transmet jamais.
             return (.badMessage, "Message de session inattendu.")
         }

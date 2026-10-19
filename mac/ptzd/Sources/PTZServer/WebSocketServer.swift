@@ -522,7 +522,7 @@ public final class WebSocketServer {
 
     nonisolated static func isAdministration(_ message: ClientMessage) -> Bool {
         switch message {
-        case .adminWatch, .revoke, .kick, .unblock, .closePairing:
+        case .adminWatch, .revoke, .kick, .unblock, .closePairing, .aiUpdated:
             true
         default:
             false

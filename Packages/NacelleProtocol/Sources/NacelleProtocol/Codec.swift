@@ -79,6 +79,8 @@ extension ClientMessage: Codable {
             self = .closePairing
         case "forgetMe":
             self = .forgetMe
+        case "aiUpdated":
+            self = .aiUpdated
         default:
             throw NacelleProtocolError.unknownType(type)
         }
@@ -133,6 +135,8 @@ extension ClientMessage: Codable {
             try container.encode("closePairing", forKey: .type)
         case .forgetMe:
             try container.encode("forgetMe", forKey: .type)
+        case .aiUpdated:
+            try container.encode("aiUpdated", forKey: .type)
         }
     }
 
@@ -143,7 +147,7 @@ extension ClientMessage: Codable {
 
 extension StateSnapshot: Codable {
     private enum CodingKeys: String, CodingKey {
-        case camera, control, privacy, pan, tilt, zoom, moving, aiTracking, talkback, privacyMode
+        case camera, control, privacy, pan, tilt, zoom, moving, aiTracking, talkback, privacyMode, privacyReason
     }
 
     public init(from decoder: any Decoder) throws {
@@ -162,7 +166,9 @@ extension StateSnapshot: Codable {
             // deux cas la parole est indisponible, et le reste de l'état reste lisible (iPhones déjà installés).
             talkback: (try? container.decodeIfPresent(TalkbackAvailability.self, forKey: .talkback)) ?? .unavailable,
             // Absent chez un ptzd d'avant la vie privée V2 ; une valeur inconnue (un futur ptzd) se lit aussi nil (spec § 6.5 bis).
-            privacyMode: (try? container.decodeIfPresent(PrivacyMode.self, forKey: .privacyMode))
+            privacyMode: (try? container.decodeIfPresent(PrivacyMode.self, forKey: .privacyMode)),
+            // De même pour la raison du mode `tilt` : absente ou inconnue, elle se lit nil.
+            privacyReason: (try? container.decodeIfPresent(PrivacyReason.self, forKey: .privacyReason))
         )
     }
 
@@ -180,6 +186,7 @@ extension StateSnapshot: Codable {
         try container.encode(talkback, forKey: .talkback)
         // Omis (et non null) hors vie privée : un client ancien n'a rien de nouveau à ignorer.
         try container.encodeIfPresent(privacyMode, forKey: .privacyMode)
+        try container.encodeIfPresent(privacyReason, forKey: .privacyReason)
     }
 }
 
