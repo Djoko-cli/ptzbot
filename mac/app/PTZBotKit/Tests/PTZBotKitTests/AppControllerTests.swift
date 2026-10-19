@@ -225,10 +225,58 @@ struct AppControllerTests {
         try FakeSDK.write(Data("ancien binaire".utf8), to: sdk.obsbotAIURL)
         try FakeSDK.write(Data("empreinte de la version précédente\n".utf8), to: sdk.hashURL)
         let app = controller()
+        let updates = Counter()
+        app.onAIUpdated = { updates.value += 1 }
         await app.launch()
         #expect(toolchain.compiled.count == 1)
         #expect(app.sdkStatus == .ready)
         #expect(!sdk.needsRecompile())
+        // ptzd, lancé avant la recompilation, est prévenu une fois (spec § 6.5 bis) ; pas sans recompilation.
+        #expect(updates.value == 1)
+        await app.refreshSDK()
+        #expect(updates.value == 1)
+    }
+
+    @Test("Recompilation impossible (outils absents) : ptzd n'est pas prévenu, l'ancien obsbot-ai reste en service")
+    func noUpdateWithoutRecompile() async throws {
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sdk = installer()
+        try FakeSDK.write(FakeSDK.thin(FakeSDK.arm64), to: sdk.libraryURL)
+        try FakeSDK.write(Data("// en-tête".utf8), to: sdk.headersURL.appending(path: "dev/devs.hpp"))
+        try FakeSDK.write(Data("ancien binaire".utf8), to: sdk.obsbotAIURL)
+        try FakeSDK.write(Data("empreinte de la version précédente\n".utf8), to: sdk.hashURL)
+        toolchain.available.withLock { $0 = false }
+        let app = controller()
+        let updates = Counter()
+        app.onAIUpdated = { updates.value += 1 }
+        await app.launch()
+        #expect(app.sdkStatus == .toolsRequired(fallback: true))
+        #expect(updates.value == 0)
+    }
+
+    @Test("SDK installé par la fenêtre : ptzd prévenu, puis état relu ; ancienne installation : jamais prévenue")
+    func sdkInstalledNotifies() async throws {
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = controller()
+        let updates = Counter()
+        app.onAIUpdated = { updates.value += 1 }
+        await app.launch()
+        await app.sdkInstalled()
+        #expect(updates.value == 1)
+        #expect(app.sdkStatus == .absent)
+    }
+
+    @Test("Ancienne installation gardée : la recompilation ne prévient pas ptzd (le sien a son propre obsbot-ai)")
+    func legacyNotNotified() async throws {
+        defer { try? FileManager.default.removeItem(at: root) }
+        try installLegacy()
+        let app = controller(confirm: false)
+        let updates = Counter()
+        app.onAIUpdated = { updates.value += 1 }
+        await app.launch()
+        #expect(app.legacy == .kept)
+        await app.sdkInstalled()
+        #expect(updates.value == 0)
     }
 
     @Test("Outils absents : « Outils de développement requis » ; le bouton lance xcode-select --install ; panneau rouvert : état relu")

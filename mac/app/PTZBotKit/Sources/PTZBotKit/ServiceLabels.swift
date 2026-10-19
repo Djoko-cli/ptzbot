@@ -164,6 +164,59 @@ extension Labels {
         return tracking == .unknown ? Localization.text("État inconnu") : nil
     }
 
+    /// La petite ligne sous « Vie privée » (spec § 6.5 bis). En vie privée, ce qui tient vraiment : « Image et micro
+    /// coupés » seulement quand ptzd a constaté le mode natif, « Protection en cours » tant que l'objectif n'a pas été vu
+    /// à −70° (rebranchement, démarrage, réveil de la caméra), « Objectif détourné » sinon (mode natif en cours ou
+    /// impossible, ptzd ancien). Hors vie privée, ce qu'elle fera : couper l'image et le micro seulement si le SDK est prêt.
+    public static func privacySubtitle(active: Bool, mode: PrivacyMode?, reason: PrivacyReason? = nil, sdkReady: Bool) -> String {
+        if active {
+            if mode == .native {
+                return Localization.text("Image et micro coupés")
+            }
+            return reason == .pending ? Localization.text("Protection en cours") : Localization.text("Objectif détourné")
+        }
+        return sdkReady
+            ? Localization.text("Coupe l'image et le micro de la caméra")
+            : Localization.text("Détourne l'objectif de la caméra")
+    }
+
+    /// Le repli de ptzd : le SDK est là, mais le mode natif de la caméra a échoué (le message qui accompagne le repli).
+    public static var privacyFallbackNote: String {
+        Localization.text("La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné.")
+    }
+
+    /// La note sous « Vie privée » quand elle ne tient que par l'inclinaison de l'objectif (mode `tilt`), selon la raison
+    /// donnée par ptzd. Pour un obsbot-ai à recompiler, l'état du SDK dit ce qui bloque et quoi faire. Nil en mode natif,
+    /// pendant que le mode natif est en cours (pas de raison), pendant la protection en cours (le sous-titre le dit), et
+    /// chez un ptzd ancien.
+    public static func privacyNote(mode: PrivacyMode?, reason: PrivacyReason?, sdk: SDKStatus?) -> String? {
+        guard mode == .tilt, let reason else { return nil }
+        switch reason {
+        case .pending:
+            return nil
+        case .noSDK:
+            return Localization.text("Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.")
+        case .failed:
+            return privacyFallbackNote
+        case .updating:
+            switch sdk {
+            case .toolsRequired:
+                return Localization.text("obsbot-ai doit être recompilé : installez les outils de développement d'Apple pour que la vie privée coupe l'image et le micro. En attendant, elle détourne seulement l'objectif.")
+            case .compileFailed:
+                return Localization.text("La recompilation d'obsbot-ai a échoué : la vie privée détourne seulement l'objectif. Le détail est dans le journal obsbot-ai-compilation.log.")
+            default:
+                return Localization.text("Mise à jour du SDK OBSBOT en cours : la vie privée détourne seulement l'objectif pour l'instant.")
+            }
+        }
+    }
+
+    /// Le lien « Installer les outils de développement… » sous la note : obsbot-ai attend sa recompilation et les outils
+    /// manquent.
+    public static func privacyNeedsTools(mode: PrivacyMode?, reason: PrivacyReason?, sdk: SDKStatus?) -> Bool {
+        guard mode == .tilt, reason == .updating, case .toolsRequired = sdk else { return false }
+        return true
+    }
+
     /// Le suivi IA a besoin du SDK de l'app et d'un obsbot-ai qui le charge ; l'ancienne installation a le sien
     /// dans `lib/`.
     public static func aiNeedsSDK(_ status: SDKStatus?, legacy: Bool) -> Bool {

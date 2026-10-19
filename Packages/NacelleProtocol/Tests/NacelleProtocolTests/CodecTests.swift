@@ -22,6 +22,7 @@ struct ClientMessageTests {
         .unblock(deviceID: "00112233445566778899aabbccddeeff"),
         .closePairing,
         .forgetMe,
+        .aiUpdated,
     ])
     func roundTrip(_ message: ClientMessage) throws {
         let text = try NacelleCodec.encode(message)
@@ -39,6 +40,7 @@ struct ClientMessageTests {
         #expect(try NacelleCodec.encode(ClientMessage.kick(deviceID: "1a2b")) == #"{"deviceID":"1a2b","type":"kick"}"#)
         #expect(try NacelleCodec.encode(ClientMessage.adminWatch) == #"{"type":"adminWatch"}"#)
         #expect(try NacelleCodec.encode(ClientMessage.closePairing) == #"{"type":"closePairing"}"#)
+        #expect(try NacelleCodec.encode(ClientMessage.aiUpdated) == #"{"type":"aiUpdated"}"#)
         #expect(try NacelleCodec.encode(ClientMessage.aiTracking(on: true)) == #"{"on":true,"type":"aiTracking"}"#)
     }
 
@@ -181,6 +183,75 @@ struct ServerMessageTests {
         var expected = snapshot
         expected.talkback = .unavailable
         #expect(decoded == expected)
+    }
+
+    @Test("privacyMode : présent, écrit et relu (spec § 6.5 bis)", arguments: [PrivacyMode.native, PrivacyMode.tilt])
+    func privacyModePresent(mode: PrivacyMode) throws {
+        var snapshot = Self.known
+        snapshot.privacy = true
+        snapshot.privacyMode = mode
+        let text = try NacelleCodec.encode(ServerMessage.state(snapshot))
+        #expect(text.contains(#""privacyMode":"\#(mode.rawValue)""#))
+        #expect(try NacelleCodec.decodeServer(text) == .state(snapshot))
+    }
+
+    @Test("privacyMode : absent (ptzd d'avant la vie privée V2), il n'est pas écrit et se lit nil")
+    func privacyModeAbsent() throws {
+        let text = #"{"aiTracking":"off","camera":"connected","control":"ready","moving":false,"pan":0,"privacy":true,"tilt":0,"type":"state","zoom":0}"#
+        guard case let .state(snapshot) = try NacelleCodec.decodeServer(text) else {
+            Issue.record("state attendu")
+            return
+        }
+        #expect(snapshot.privacyMode == nil)
+        // Sans mode, rien n'est écrit : un ancien client n'a pas à l'ignorer.
+        #expect(try !NacelleCodec.encode(ServerMessage.state(snapshot)).contains("privacyMode"))
+    }
+
+    @Test("Une valeur de privacyMode inconnue (un futur ptzd) se lit nil : l'état reste lisible")
+    func privacyModeUnknownValue() throws {
+        var snapshot = Self.known
+        snapshot.privacy = true
+        snapshot.privacyMode = .native
+        let text = try NacelleCodec.encode(ServerMessage.state(snapshot))
+        let future = text.replacingOccurrences(of: #""privacyMode":"native""#, with: #""privacyMode":"flou""#)
+        guard case let .state(decoded) = try NacelleCodec.decodeServer(future) else {
+            Issue.record("state attendu")
+            return
+        }
+        #expect(decoded.privacyMode == nil)
+        var expected = snapshot
+        expected.privacyMode = nil
+        #expect(decoded == expected)
+    }
+
+    @Test("privacyReason : écrite et relue avec le mode tilt (spec § 6.5 bis)", arguments: [PrivacyReason.pending, .noSDK, .updating, .failed])
+    func privacyReasonPresent(reason: PrivacyReason) throws {
+        var snapshot = Self.known
+        snapshot.privacy = true
+        snapshot.privacyMode = .tilt
+        snapshot.privacyReason = reason
+        let text = try NacelleCodec.encode(ServerMessage.state(snapshot))
+        #expect(text.contains(#""privacyReason":"\#(reason.rawValue)""#))
+        #expect(try NacelleCodec.decodeServer(text) == .state(snapshot))
+    }
+
+    @Test("privacyReason absente (mode natif en cours, ptzd ancien) : pas écrite, lue nil ; inconnue : lue nil")
+    func privacyReasonAbsentOrUnknown() throws {
+        var snapshot = Self.known
+        snapshot.privacy = true
+        snapshot.privacyMode = .tilt
+        let text = try NacelleCodec.encode(ServerMessage.state(snapshot))
+        #expect(!text.contains("privacyReason"))
+        #expect(try NacelleCodec.decodeServer(text) == .state(snapshot))
+        snapshot.privacyReason = .failed
+        let future = try NacelleCodec.encode(ServerMessage.state(snapshot))
+            .replacingOccurrences(of: #""privacyReason":"failed""#, with: #""privacyReason":"autre""#)
+        guard case let .state(decoded) = try NacelleCodec.decodeServer(future) else {
+            Issue.record("state attendu")
+            return
+        }
+        #expect(decoded.privacyReason == nil)
+        #expect(decoded.privacyMode == .tilt)
     }
 
     @Test("adminState : dates en secondes depuis 1970, absences écrites null, jamais de secret")

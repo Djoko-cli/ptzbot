@@ -46,6 +46,14 @@ public final class ZoomDriver {
         onChange?()
     }
 
+    /// Abandonne la valeur en attente du prochain créneau : l'entrée en vie privée n'en laisse partir aucune
+    /// (spec § 6.5 bis : aucun ordre UVC une fois la vie privée demandée).
+    public func cancelPending() {
+        flush?.cancel()
+        flush = nil
+        pending = nil
+    }
+
     /// Oublie tout (caméra débranchée).
     public func reset() {
         flush?.cancel()

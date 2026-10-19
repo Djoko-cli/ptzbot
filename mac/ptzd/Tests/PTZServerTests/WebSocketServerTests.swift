@@ -714,6 +714,7 @@ struct WebSocketServerTests {
 
     @Test("Administration hors de 127.0.0.1 de confiance : notLocal, journalisé, rien d'autre", arguments: [
         ClientMessage.adminWatch, .revoke(deviceID: "00"), .kick(deviceID: "00"), .unblock(deviceID: "00"), .closePairing,
+        .aiUpdated,
     ])
     func administrationRefused(_ message: ClientMessage) async throws {
         let lines = LineBox()
@@ -990,6 +991,18 @@ struct WebSocketServerTests {
         try await send(.forgetMe, on: task)
         #expect(try await next(task) { _ in true } == .error(code: .badMessage, message: "Message réservé à un iPhone appairé."))
         #expect(try authority.devices.device(id: deviceID) != nil)
+        withExtendedLifetime(server) {}
+    }
+
+    @Test("aiUpdated depuis le Mac : l'utilitaire du suivi IA est relancé, rien n'est renvoyé (spec § 6.5 bis)")
+    func aiUpdatedFromMac() async throws {
+        let (server, ports) = await startServer()
+        let (admin, _) = try await watchAdmin(ports["127.0.0.1"]!)
+        defer { admin.cancel(with: .goingAway, reason: nil) }
+        #expect(ai.resets == 0)
+        try await send(.aiUpdated, on: admin)
+        try await waitUntil { ai.resets == 1 }
+        #expect(WebSocketServer.isAdministration(.aiUpdated))
         withExtendedLifetime(server) {}
     }
 
@@ -1417,9 +1430,14 @@ final class StubCamera: CameraDevice {
 @MainActor
 final class StubAI: AIRunner {
     private(set) var prewarms = 0
+    private(set) var resets = 0
 
     func prewarm() {
         prewarms += 1
+    }
+
+    func reset() {
+        resets += 1
     }
 
     func run(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {

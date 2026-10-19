@@ -46,6 +46,12 @@ private final class Outcome {
     var value: AIResult?
 }
 
+/// Résultat d'une lecture de l'état réel.
+@MainActor
+private final class ReadingOutcome {
+    var value: PrivacyReading?
+}
+
 /// Réponse « ok » à chaque ordre, après un démarrage de 0,2 s qui laisse passer du bruit sur les deux sorties.
 private let answering = """
     echo "bruit du SDK"
@@ -67,6 +73,7 @@ struct ResidentAIRunnerTests {
         scheduler: any Scheduler,
         environment: [String: String] = [:],
         idleDelay: TimeInterval = 600,
+        keepWarm: Bool = false,
         readyTimeout: TimeInterval = 25,
         orderTimeout: TimeInterval = 5
     ) -> ResidentAIRunner {
@@ -76,6 +83,7 @@ struct ResidentAIRunnerTests {
             environment: environment,
             scheduler: scheduler,
             idleDelay: idleDelay,
+            keepWarm: keepWarm,
             readyTimeout: readyTimeout,
             orderTimeout: orderTimeout
         )
@@ -130,6 +138,22 @@ struct ResidentAIRunnerTests {
         await cleanUp(runner, serve)
     }
 
+    @Test("SDK prêt seulement une fois « ready » reçu : ni avant le lancement, ni pendant, ni après une réinitialisation")
+    func readiness() async throws {
+        let serve = try FakeServe(answering)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        #expect(!runner.isReady)
+        runner.prewarm()
+        // Lancé, mais le SDK cherche encore la caméra (0,2 s dans ce script).
+        #expect(!runner.isReady)
+        #expect(await eventually { runner.isReady })
+        #expect(await order(runner) == .success)
+        #expect(runner.isReady)
+        runner.reset()
+        #expect(!runner.isReady)
+        await cleanUp(runner, serve)
+    }
+
     @Test("err 2 : erreur du SDK, puis l'utilitaire est arrêté ; l'ordre suivant tourne dans un processus neuf")
     func sdkError() async throws {
         let serve = try FakeServe("""
@@ -144,15 +168,15 @@ struct ResidentAIRunnerTests {
         await cleanUp(runner, serve)
     }
 
-    @Test("err 3 : même arrêt, processus neuf ensuite")
+    @Test("err 3 : ordre inconnu (utilitaire plus ancien que ptzd), même arrêt, processus neuf ensuite")
     func badOrder() async throws {
         let serve = try FakeServe("""
             echo "obsbot-ai: ready"
             while read order; do echo "obsbot-ai: err 3"; done
             """)
         let runner = runner(serve, scheduler: DispatchScheduler())
-        #expect(await order(runner) == .unexpectedExit(3))
-        #expect(await order(runner) == .unexpectedExit(3))
+        #expect(await order(runner) == .unknownOrder)
+        #expect(await order(runner) == .unknownOrder)
         #expect(serve.starts.count == 2)
         await cleanUp(runner, serve)
     }
@@ -294,7 +318,7 @@ struct ResidentAIRunnerTests {
         let runner = runner(serve, scheduler: DispatchScheduler())
         let first = Outcome()
         runner.run(on: true) { first.value = $0 }
-        #expect(await order(runner, on: false) == .launchFailed("ordre de suivi IA précédent encore en cours"))
+        #expect(await order(runner, on: false) == .launchFailed("ordre précédent encore en cours"))
         #expect(await eventually { first.value != nil })
         #expect(first.value == .success)
         #expect(serve.starts.count == 1)
@@ -329,6 +353,45 @@ struct ResidentAIRunnerTests {
         #expect(await order(runner) == .success)
         #expect(serve.starts.count == 2)
         await cleanUp(runner, serve)
+    }
+
+    @Test("Toujours chaud : l'utilitaire prêt sans aucun ordre, et jamais arrêté pour inactivité, même des heures après")
+    func keepWarmNeverIdles() async throws {
+        let serve = try FakeServe(answering)
+        let scheduler = FakeScheduler()
+        let runner = runner(serve, scheduler: scheduler, idleDelay: 600, keepWarm: true)
+        #expect(runner.keepsWarm)
+        runner.prewarm()
+        #expect(await eventually { runner.isReady })
+        #expect(serve.orders.isEmpty)
+        let first = try #require(serve.starts.first)
+        // Bien au-delà du délai d'inactivité habituel : toujours là, toujours prêt.
+        scheduler.advance(by: 601)
+        scheduler.advance(by: 3 * 3600)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(serve.isAlive(first))
+        #expect(runner.isReady)
+        #expect(serve.lines("exits").isEmpty)
+        // Le premier ordre part tout de suite, sur le même processus.
+        #expect(await order(runner) == .success)
+        #expect(serve.starts == [first])
+        scheduler.advance(by: 3 * 3600)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(serve.isAlive(first))
+        await cleanUp(runner, serve)
+    }
+
+    @Test("Toujours chaud : après une réinitialisation, prewarm relance l'utilitaire ; par défaut, il n'est pas gardé chaud")
+    func keepWarmRestartsAfterReset() async throws {
+        let serve = try FakeServe(answering)
+        let runner = runner(serve, scheduler: FakeScheduler(), keepWarm: true)
+        runner.prewarm()
+        #expect(await eventually { runner.isReady })
+        runner.reset()
+        runner.prewarm()
+        #expect(await eventually { runner.isReady && serve.starts.count == 2 })
+        await cleanUp(runner, serve)
+        #expect(!ResidentAIRunner(executableURL: serve.executableURL, scheduler: FakeScheduler()).keepsWarm)
     }
 
     @Test("Ordre donné pendant l'arrêt pour inactivité : il attend la fin de l'ancien utilitaire, puis aboutit")
@@ -581,5 +644,162 @@ struct ResidentAIRunnerTests {
             Issue.record("launchFailed attendu")
             return
         }
+    }
+
+    // MARK: - Vie privée native (spec § 6.5 bis)
+
+    @Test("Vie privée native : « privacy on » puis « privacy off » sont écrits tels quels sur l'entrée de l'utilitaire")
+    func privacyOrders() async throws {
+        let serve = try FakeServe(answering)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let first = Outcome()
+        runner.runPrivacy(on: true) { first.value = $0 }
+        _ = await eventually { first.value != nil }
+        #expect(first.value == .success)
+        let second = Outcome()
+        runner.runPrivacy(on: false) { second.value = $0 }
+        _ = await eventually { second.value != nil }
+        #expect(second.value == .success)
+        #expect(await order(runner, on: false) == .success)
+        #expect(serve.orders == ["privacy on", "privacy off", "off"])
+        #expect(serve.starts.count == 1)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("Vie privée native : err 2 donne l'erreur du SDK, comme un ordre de suivi")
+    func privacySDKError() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            while read order; do echo "obsbot-ai: err 2"; done
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let outcome = Outcome()
+        runner.runPrivacy(on: true) { outcome.value = $0 }
+        _ = await eventually { outcome.value != nil }
+        #expect(outcome.value == .sdkError)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("Un ordre de vie privée a 5 s pour répondre, comme un ordre de suivi (il rend la main en 0 ms, mesuré)")
+    func privacyOrderTimeout() async throws {
+        let serve = try FakeServe(Self.silentThenAnswering)
+        let scheduler = FakeScheduler()
+        let runner = runner(serve, scheduler: scheduler)
+        let outcome = Outcome()
+        runner.runPrivacy(on: true) { outcome.value = $0 }
+        #expect(await eventually { serve.orders.count == 1 })
+        scheduler.advance(by: 4.9)
+        #expect(outcome.value == nil)
+        scheduler.advance(by: 0.2)
+        #expect(outcome.value == .timeout)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("privacy status : l'état et l'inclinaison (second témoin) se lisent tels quels, sur le même processus")
+    func privacyStatus() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            for reply in "privacy 84.9" "run 69.8" "run"; do
+                read order
+                echo "$order" >> "$dir/orders"
+                echo "obsbot-ai: ok $reply"
+            done
+            while read order; do echo "obsbot-ai: ok"; done
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        var readings: [PrivacyReading] = []
+        for _ in 0..<3 {
+            let outcome = ReadingOutcome()
+            runner.readPrivacy { outcome.value = $0 }
+            _ = await eventually { outcome.value != nil }
+            readings.append(outcome.value ?? .failed(.timeout))
+        }
+        #expect(readings == [.state(.privacy, pitch: 84.9), .state(.run, pitch: 69.8), .state(.run, pitch: nil)])
+        #expect(serve.orders == ["privacy status", "privacy status", "privacy status"])
+        #expect(serve.starts.count == 1)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("privacy status : un mot inconnu (sleep compris) est un échec, jamais un état deviné ; err 3 : ordre inconnu")
+    func privacyStatusUnreadable() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            read order
+            echo "obsbot-ai: ok flou"
+            read order
+            echo "obsbot-ai: ok sleep 12.0"
+            read order
+            echo "obsbot-ai: err 3"
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let first = ReadingOutcome()
+        runner.readPrivacy { first.value = $0 }
+        _ = await eventually { first.value != nil }
+        #expect(first.value == .failed(.sdkError, pitch: nil))
+        let second = ReadingOutcome()
+        runner.readPrivacy { second.value = $0 }
+        _ = await eventually { second.value != nil }
+        #expect(second.value == .failed(.sdkError, pitch: 12))
+        let third = ReadingOutcome()
+        runner.readPrivacy { third.value = $0 }
+        _ = await eventually { third.value != nil }
+        #expect(third.value == .failed(.unknownOrder, pitch: nil))
+        await cleanUp(runner, serve)
+    }
+
+    @Test("D : une lecture ratée (err 2, avec l'inclinaison) n'arrête pas l'utilitaire ; l'ordre suivant part sur la même session")
+    func failedReadKeepsSession() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            read order
+            echo "$order" >> "$dir/orders"
+            echo "obsbot-ai: err 2 84.9"
+            read order
+            echo "$order" >> "$dir/orders"
+            echo "obsbot-ai: err 2"
+            while read order; do
+                echo "$order" >> "$dir/orders"
+                echo "obsbot-ai: ok"
+            done
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let first = ReadingOutcome()
+        runner.readPrivacy { first.value = $0 }
+        _ = await eventually { first.value != nil }
+        #expect(first.value == .failed(.sdkError, pitch: 84.9))
+        let second = ReadingOutcome()
+        runner.readPrivacy { second.value = $0 }
+        _ = await eventually { second.value != nil }
+        #expect(second.value == .failed(.sdkError, pitch: nil))
+        #expect(await order(runner, on: false) == .success)
+        #expect(serve.orders == ["privacy status", "privacy status", "off"])
+        #expect(serve.starts.count == 1)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("privacy status a 5 s pour répondre, comme un ordre de suivi")
+    func privacyStatusTimeout() async throws {
+        let serve = try FakeServe(Self.silentThenAnswering)
+        let scheduler = FakeScheduler()
+        let runner = runner(serve, scheduler: scheduler)
+        let outcome = ReadingOutcome()
+        runner.readPrivacy { outcome.value = $0 }
+        #expect(await eventually { serve.orders.count == 1 })
+        scheduler.advance(by: 4.9)
+        #expect(outcome.value == nil)
+        scheduler.advance(by: 0.2)
+        #expect(outcome.value == .failed(.timeout))
+        await cleanUp(runner, serve)
+    }
+
+    @Test("L'utilitaire installé permet la vie privée native ; absent, non")
+    func supportsNativePrivacy() throws {
+        let serve = try FakeServe(answering)
+        let present = runner(serve, scheduler: DispatchScheduler())
+        #expect(present.supportsNativePrivacy)
+        serve.remove()
+        #expect(!present.supportsNativePrivacy)
+        let absent = ResidentAIRunner(executableURL: URL(fileURLWithPath: "/nonexistent/obsbot-ai"), scheduler: DispatchScheduler())
+        #expect(!absent.supportsNativePrivacy)
     }
 }

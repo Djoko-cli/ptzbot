@@ -121,6 +121,8 @@ struct PTZDaemon {
                 outputURL: logsDirectory.appending(path: "obsbot-ai.log"),
                 environment: options.aiEnvironment,
                 scheduler: scheduler,
+                // Lancé avec le SDK (`--ai`) : l'utilitaire reste chargé tant que ptzd tourne (spec § 6.9).
+                keepWarm: options.keepsAIWarm,
                 log: log
             ),
             store: JSONFileStateStore(url: supportDirectory.appending(path: "state.json"), log: { write($0) }),
@@ -168,11 +170,19 @@ struct PTZDaemon {
             }
         }
 
+        // Sortie de veille du Mac : la caméra a pu être réveillée pendant ce temps (vie privée native, spec § 6.5 bis).
+        let wakeWatcher = SystemWakeWatcher { controller.systemWoke() }
+
         log("ptzd démarre.")
         camera.startWatching()
+        if !camera.isAttached {
+            // Une caméra absente au démarrage, puis branchée, sort d'une mise sous tension (pas du mode natif de PTZBot).
+            controller.cameraAbsentAtStartup()
+        }
         server.start()
         talkbackWatcher.start()
-        withExtendedLifetime((camera, controller, server, parentWatcher, serviceLock, voiceSink, talkbackWatcher)) {
+        wakeWatcher.start()
+        withExtendedLifetime((camera, controller, server, parentWatcher, serviceLock, voiceSink, talkbackWatcher, wakeWatcher)) {
             dispatchMain()
         }
     }

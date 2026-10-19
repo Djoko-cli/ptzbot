@@ -4,7 +4,7 @@ import NacelleProtocol
 /// Les refus de ptzd, traduits d'après leur code (spec distribution § 7.2) : l'app ne montre plus le texte
 /// français envoyé par ptzd, qui reste celui du journal et de la ligne de commande.
 public enum ErrorTexts {
-    /// Le texte montré pour un refus de ptzd. Pour `uvcFailed`, le motif connu du suivi IA est repris de `message`.
+    /// Le texte montré pour un refus de ptzd. Pour `uvcFailed`, le motif connu du suivi IA, ou l'un des messages de la vie privée native, est repris de `message`.
     public static func text(for code: ErrorCode, message: String) -> String {
         switch code {
         case .privacyActive:
@@ -12,7 +12,18 @@ public enum ErrorTexts {
         case .cameraAbsent:
             Localization.text("Caméra débranchée.")
         case .uvcFailed:
-            aiMotive(in: message).map(aiText) ?? Localization.text("La caméra a refusé la commande.")
+            switch message {
+            case PrivacyFailureText.fallbackToTilt:
+                Labels.privacyFallbackNote
+            case PrivacyFailureText.exitFailed:
+                Localization.text("La vie privée n'a pas pu être levée : la caméra est restée en mode vie privée.")
+            case PrivacyFailureText.exitUnreadable:
+                Localization.text("La vie privée n'a pas pu être levée : l'état de la caméra ne se lit pas.")
+            case PrivacyFailureText.exitNeedsUpdate:
+                Localization.text("La vie privée n'a pas pu être levée : obsbot-ai n'est pas à jour.")
+            default:
+                aiMotive(in: message).map(aiText) ?? Localization.text("La caméra a refusé la commande.")
+            }
         case .badMessage:
             Localization.text("ptzd a refusé ce message.")
         case .unpaired:
@@ -38,6 +49,8 @@ public enum ErrorTexts {
         case sdkError
         case timeout
         case launchFailed
+        /// obsbot-ai d'avant cet ordre : il attend sa recompilation.
+        case unknownOrder
         case unexpectedExit(String)
         /// Un message du suivi IA au motif inconnu (version de ptzd plus récente).
         case other
@@ -52,6 +65,7 @@ public enum ErrorTexts {
         case AIFailureText.sdkError: return .sdkError
         case AIFailureText.timeout: return .timeout
         case AIFailureText.launchFailed: return .launchFailed
+        case AIFailureText.unknownOrder: return .unknownOrder
         default:
             if motive.hasPrefix(AIFailureText.unexpectedExitPrefix) {
                 let status = String(motive.dropFirst(AIFailureText.unexpectedExitPrefix.count))
@@ -73,6 +87,8 @@ public enum ErrorTexts {
             Localization.text("Suivi IA non modifié : délai dépassé.")
         case .launchFailed:
             Localization.text("Suivi IA non modifié : obsbot-ai n'a pas pu être lancé.")
+        case .unknownOrder:
+            Localization.text("Suivi IA non modifié : obsbot-ai n'est pas à jour.")
         case let .unexpectedExit(code):
             Localization.text("Suivi IA non modifié : obsbot-ai s'est arrêté avec le code \(code).")
         case .other:

@@ -5,35 +5,38 @@ import NacelleProtocol
 /// présence de la caméra et publie l'état (spec § 5 et § 6).
 @MainActor
 public final class PTZController {
-    /// Délai avant de relire la position après un déplacement absolu : relue
-    /// trop tôt, la caméra renvoie une valeur fausse (spec § 10, question 1).
-    public static let settleDelay: TimeInterval = 2
-    /// Écart toléré entre l'ordre absolu et la position relue (la relecture peut différer d'1°).
-    public static let positionTolerance: Double = 3
+    /// Délai avant de relire la position après un déplacement absolu (spec § 6.5).
+    public static let settleDelay = PrivacyReconciler.settleDelay
+    /// Écart toléré entre l'ordre absolu et la position relue.
+    public static let positionTolerance = PrivacyReconciler.positionTolerance
     /// Renvois au plus d'un ordre absolu ignoré par la caméra, hors vie privée.
-    public static let maxResends = 2
-    /// En vie privée, la vérification ne s'arrête jamais : délais avant chaque nouvelle
-    /// vérification après un renvoi, le dernier se répétant indéfiniment.
-    public static let privacyBackoff: [TimeInterval] = [2, 5, 10, 30]
+    public static let maxResends = PrivacyReconciler.maxResends
+    /// Protection par l'inclinaison : délais avant chaque nouvelle vérification après un renvoi.
+    public static let privacyBackoff = PrivacyReconciler.privacyBackoff
+    /// Utilitaire gardé chaud : vérifié à cet intervalle, il est relancé s'il est mort seul (incident, SIGKILL). Sans effet
+    /// pendant la minute que le lanceur laisse après un utilitaire mort sans avoir servi.
+    public static let warmCheckInterval: TimeInterval = 60
 
     public private(set) var snapshot: StateSnapshot
     /// Appelé à chaque changement d'état, pour diffusion à tous les clients.
     public var onStateChange: ((StateSnapshot) -> Void)?
-    /// Erreur à transmettre plus tard à ce client (ordre de suivi IA échoué).
+    /// Erreur à transmettre plus tard à ce client (ordre de suivi IA échoué, vie privée native).
     public var onClientError: ((ClientID, ErrorCode, String) -> Void)?
 
     private let camera: any CameraDevice
     private let scheduler: any Scheduler
+    /// L'utilitaire obsbot-ai (par la file des ordres), à tenir chaud quand ptzd dispose du SDK.
+    private let ai: any AIRunner
     private let motion: MotionDriver
     private let zoom: ZoomDriver
-    private let privacy: PrivacyKeeper
+    /// La vie privée : état voulu, état constaté et réconciliateur (spec § 6.5 bis).
+    private let privacy: PrivacyReconciler
     private let control: ControlTaker
     private let log: LogSink
-    private var settle: (any Cancellable)?
-    private var verifyTarget = false
     private var lastControl: ControlState = .idle
     /// Retour audio de talkd, lu par `TalkbackWatcher` (spec parler § 5).
     private var talkback: TalkbackAvailability = .unavailable
+    private var warmCheck: (any Cancellable)?
 
     public init(
         camera: any CameraDevice,
@@ -47,20 +50,39 @@ public final class PTZController {
         self.camera = camera
         self.scheduler = scheduler
         self.log = log
-        motion = MotionDriver(camera: camera, scheduler: scheduler, settings: settings, log: log)
-        zoom = ZoomDriver(camera: camera, scheduler: scheduler, log: log)
-        privacy = PrivacyKeeper(camera: camera, store: store, log: log)
-        control = ControlTaker(runner: ai, scheduler: scheduler, isObsbotCenterRunning: isObsbotCenterRunning, log: log)
+        // L'utilitaire ne traite qu'un ordre à la fois : la coupure du suivi IA et la vie privée native passent par la
+        // même file, l'une après l'autre (spec § 6.5 bis).
+        let queue = AIOrderQueue(runner: ai)
+        self.ai = queue
+        let motion = MotionDriver(camera: camera, scheduler: scheduler, settings: settings, log: log)
+        let zoom = ZoomDriver(camera: camera, scheduler: scheduler, log: log)
+        let control = ControlTaker(runner: queue, scheduler: scheduler, isObsbotCenterRunning: isObsbotCenterRunning, log: log)
+        self.motion = motion
+        self.zoom = zoom
+        self.control = control
+        privacy = PrivacyReconciler(
+            camera: camera,
+            scheduler: scheduler,
+            runner: queue,
+            store: store,
+            motion: motion,
+            zoom: zoom,
+            control: control,
+            log: log
+        )
         snapshot = StateSnapshot(
             camera: camera.isPresent ? .connected : .absent,
             control: .idle,
             privacy: privacy.isActive,
             pan: nil, tilt: nil, zoom: nil,
-            moving: false
+            moving: false,
+            privacyMode: privacy.mode,
+            privacyReason: privacy.reason
         )
         motion.onChange = { [weak self] in self?.publish() }
         zoom.onChange = { [weak self] in self?.publish() }
         privacy.onChange = { [weak self] in self?.publish() }
+        privacy.onClientError = { [weak self] in self?.onClientError?($0, $1, $2) }
         control.onChange = { [weak self] in self?.controlChanged() }
     }
 
@@ -73,9 +95,68 @@ public final class PTZController {
 
     /// Un iPhone vient de s'authentifier : prépare l'utilitaire du suivi IA avant son premier ordre.
     public func prewarmAI() {
-        // Caméra absente ou vie privée : aucun ordre de suivi n'est possible, inutile de charger le SDK.
-        guard camera.isPresent, !privacy.isActive else { return }
+        // Caméra absente : rien à piloter. Vie privée : aucun ordre de suivi n'est possible, inutile de charger le SDK,
+        // sauf si l'utilitaire est gardé chaud (il relit alors l'état réel de la caméra).
+        guard camera.isPresent, ai.keepsWarm || !privacy.isActive else { return }
         control.prewarm()
+    }
+
+    /// Utilitaire toujours chaud (ptzd lancé avec le SDK, spec § 6.9) : préparé dès que la caméra est là (démarrage de
+    /// ptzd, branchement, mise à jour d'obsbot-ai, connexion d'un client), puis vérifié toutes les `warmCheckInterval`
+    /// secondes. Ainsi toute entrée en vie privée prend le chemin rapide. Sans effet quand l'utilitaire n'est pas gardé
+    /// chaud ou n'est pas installé ; sans caméra, rien n'est lancé (il ne trouverait rien).
+    private func keepAIWarm() {
+        guard ai.keepsWarm, ai.supportsNativePrivacy else { return }
+        if camera.isPresent {
+            ai.prewarm()
+        }
+        if warmCheck == nil {
+            warmCheck = scheduler.schedule(after: Self.warmCheckInterval) { [weak self] in
+                self?.warmCheck = nil
+                self?.keepAIWarm()
+            }
+        }
+    }
+
+    /// Un client (iPhone ou Mac) vient de s'authentifier : en vie privée native, l'état réel de la caméra est relu
+    /// tout de suite, pour que ce qu'il affiche ne date pas de la dernière relecture lente (spec § 6.5 bis).
+    public func clientConnected() {
+        keepAIWarm()
+        privacy.refreshRealState()
+    }
+
+    /// Le Mac sort de veille : la caméra a pu être réveillée pendant ce temps ; même relecture qu'à une connexion. Un
+    /// branchement vu juste après est traité comme un démarrage, non comme une coupure d'alimentation (réserve 1).
+    public func systemWoke() {
+        log("Le Mac sort de veille.")
+        // Utilitaire gardé chaud, vie privée éteinte : sa session du SDK a pu devenir périmée pendant la veille (le bus
+        // USB n'est pas renuméroté, aucun branchement n'est vu). Elle repart neuve : une entrée dans les secondes qui
+        // suivent prend le repli (−70° tout de suite), jamais un ordre sur une session invalide. En vie privée, la
+        // relecture du réveil (`privacy.systemWoke`) couvre déjà ce cas : deux lectures ratées ouvrent une session neuve.
+        if ai.keepsWarm, !privacy.isActive {
+            control.reset()
+            lastControl = control.state
+            keepAIWarm()
+        }
+        privacy.systemWoke()
+    }
+
+    /// ptzd démarre sans voir la caméra : son prochain branchement est une mise sous tension, pas un redémarrage de ptzd
+    /// (la caméra ne peut pas être restée en mode natif).
+    public func cameraAbsentAtStartup() {
+        privacy.cameraAbsentAtStartup()
+    }
+
+    /// PTZBot a recompilé ou réinstallé obsbot-ai (message `aiUpdated`) : l'utilitaire repart du nouveau programme, et
+    /// la vie privée est réconciliée avec lui (spec § 6.5 bis).
+    public func aiUpdated() {
+        log("obsbot-ai mis à jour par PTZBot : utilitaire relancé.")
+        privacy.abandonSession()
+        control.reset()
+        lastControl = control.state
+        keepAIWarm()
+        privacy.utilityUpdated()
+        publish()
     }
 
     /// Traite un message. Renvoie l'erreur à transmettre à ce client, ou nil.
@@ -96,7 +177,7 @@ public final class PTZController {
             if pan != 0 || tilt != 0, control.mayBeTracking {
                 control.take()
             }
-            verifyTarget = false
+            privacy.userMoved()
             return attempt { try motion.move(pan: pan, tilt: tilt, from: client) }
         case let .zoom(value):
             if let refusal = refusal() {
@@ -107,21 +188,7 @@ public final class PTZController {
             guard camera.isPresent else {
                 return (.cameraAbsent, "Caméra débranchée.")
             }
-            if on {
-                // Le suivi IA ramènerait l'objectif vers la personne.
-                if control.mayBeTracking {
-                    control.take()
-                }
-                return attempt {
-                    try? motion.stop()
-                    try privacy.enter(currentPosition: motion.position, currentZoom: zoom.value)
-                    refreshAfterSettling()
-                }
-            }
-            return attempt {
-                try privacy.exit()
-                refreshAfterSettling()
-            }
+            return privacy.request(on: on, from: client)
         case let .aiTracking(on):
             if let refusal = refusal() {
                 return refusal
@@ -131,7 +198,8 @@ public final class PTZController {
                 self?.onClientError?(client, .uvcFailed, AIFailureText.message(motive: result.userDescription))
             }
             return nil
-        case .pair, .openPairing, .auth, .webrtcOffer, .adminWatch, .revoke, .kick, .unblock, .closePairing, .forgetMe:
+        case .pair, .openPairing, .auth, .webrtcOffer, .adminWatch, .revoke, .kick, .unblock, .closePairing, .forgetMe,
+             .aiUpdated:
             // Messages de session et d'administration : le serveur les traite et ne les transmet jamais.
             return (.badMessage, "Message de session inattendu.")
         }
@@ -141,132 +209,41 @@ public final class PTZController {
         motion.clientDisconnected(client)
     }
 
-    /// Branchement ou débranchement de la caméra. Au branchement, la vie privée
-    /// est réappliquée et le suivi IA recoupé, au cas où la caméra aurait redémarré.
+    /// Branchement ou débranchement de la caméra. Au branchement, la vie privée est réappliquée (d'après l'état réel si
+    /// la caméra peut être en mode natif) et le suivi IA recoupé, au cas où la caméra aurait redémarré.
     public func cameraPresenceChanged(_ present: Bool) {
+        // Un ordre de vie privée native en cours ne vaut plus : sa réponse est écartée, l'état réel sera relu.
+        privacy.abandonSession()
         // Le SDK gardé par l'utilitaire du suivi IA ne connaît plus la caméra : session neuve au prochain ordre.
         control.reset()
+        lastControl = control.state
         if present {
+            keepAIWarm()
             log("Caméra branchée.")
-            motion.refreshPosition()
-            zoom.refresh()
-            if privacy.isActive {
-                do {
-                    try privacy.enforce()
-                    refreshAfterSettling()
-                } catch {
-                    log("Vie privée non réappliquée : \(error)")
-                }
-                control.take()
-            } else {
+            if !privacy.isActive {
+                motion.refreshPosition()
+                zoom.refresh()
                 // La caméra a pu redémarrer avec son propre réglage : le dernier ordre ne vaut plus.
                 control.forget()
             }
         } else {
             log("Caméra débranchée.")
-            settle?.cancel()
-            settle = nil
-            verifyTarget = false
             motion.reset()
             zoom.reset()
         }
+        privacy.cameraPresenceChanged(present)
         publish()
     }
 
-    /// Fin de la coupure du suivi IA en vie privée : sur une caméra qui démarre,
-    /// obsbot-ai off a pu tourner en même temps que la première réapplication.
+    /// Fin d'une coupure du suivi IA : sur une caméra qui démarre, obsbot-ai off a pu tourner en même temps que la
+    /// première réapplication de la vie privée.
     private func controlChanged() {
         let previous = lastControl
         lastControl = control.state
-        if previous == .taking, control.state != .taking, privacy.isActive, camera.isPresent {
-            do {
-                try privacy.enforce()
-                refreshAfterSettling()
-            } catch {
-                log("Vie privée non réappliquée après la coupure du suivi IA : \(error)")
-            }
+        if previous == .taking, control.state != .taking, camera.isPresent {
+            privacy.controlFinished()
         }
         publish()
-    }
-
-    /// Relit la position après `delay`, puis la compare à la cible. `resends` compte
-    /// les renvois déjà faits pour cette cible.
-    private func refreshAfterSettling(resends: Int = 0, delay: TimeInterval = PTZController.settleDelay) {
-        verifyTarget = true
-        settle?.cancel()
-        settle = scheduler.schedule(after: delay) { [weak self] in
-            guard let self else { return }
-            self.settle = nil
-            self.motion.refreshPosition()
-            self.zoom.refresh()
-            self.checkTargetReached(resends: resends)
-        }
-    }
-
-    /// La caméra ignore parfois un ordre absolu en renvoyant un succès : on compare la
-    /// position relue à la cible et on renvoie l'ordre. Hors vie privée, au plus
-    /// maxResends fois ; en vie privée, jusqu'à ce que le tilt soit atteint.
-    private func checkTargetReached(resends: Int) {
-        guard verifyTarget, let target = privacy.lastTarget else { return }
-        let position = motion.position
-        if let position {
-            // En vie privée, seul le tilt protège l'image ; à -70° la caméra relit d'ailleurs
-            // un pan décalé (constaté le 2026-10-05). Hors vie privée, les deux axes comptent.
-            let panReached = privacy.isActive || abs(position.pan - target.pan) <= Self.positionTolerance
-            if panReached && abs(position.tilt - target.tilt) <= Self.positionTolerance {
-                verifyTarget = false
-                if resends > Self.maxResends {
-                    log("Position atteinte après \(resends) renvois : relue \(position).")
-                }
-                return
-            }
-        } else if !privacy.isActive {
-            // Position illisible hors vie privée : rien à comparer.
-            verifyTarget = false
-            return
-        }
-        let seen = position.map { "\($0)" } ?? "illisible"
-        if privacy.isActive {
-            retryPrivacy(target: target, seen: seen, resends: resends)
-            return
-        }
-        guard resends < Self.maxResends else {
-            verifyTarget = false
-            log("Position non atteinte après \(Self.maxResends) renvois : cible \(target), relue \(seen).")
-            return
-        }
-        log("Ordre absolu ignoré par la caméra (cible \(target), relue \(seen)) : nouvel envoi.")
-        do {
-            try privacy.resendLastTarget()
-            refreshAfterSettling(resends: resends + 1)
-        } catch {
-            verifyTarget = false
-            log("Nouvel envoi refusé : \(error)")
-        }
-    }
-
-    /// Vie privée : renvoi puis nouvelle vérification après 2, 5, 10, puis toutes les 30 s,
-    /// sans jamais abandonner. Une ligne de journal par palier au plus.
-    private func retryPrivacy(target: PanTiltPosition, seen: String, resends: Int) {
-        let stage = min(resends, Self.privacyBackoff.count - 1)
-        let delay = Self.privacyBackoff[stage]
-        let logged = resends < Self.privacyBackoff.count
-        if logged {
-            let next = stage == Self.privacyBackoff.count - 1 ? "toutes les \(Int(delay)) s" : "dans \(Int(delay)) s"
-            log("Ordre de vie privée ignoré par la caméra (cible \(target), relue \(seen)) : nouvel envoi, vérification \(next).")
-        }
-        do {
-            try privacy.resendLastTarget()
-        } catch CameraError.absent {
-            // Le débranchement est traité par cameraPresenceChanged ; le rebranchement réapplique.
-            verifyTarget = false
-            return
-        } catch {
-            if logged {
-                log("Nouvel envoi refusé : \(error). Nouvel essai quand même.")
-            }
-        }
-        refreshAfterSettling(resends: resends + 1, delay: delay)
     }
 
     private func refusal() -> (code: ErrorCode, message: String)? {
@@ -301,7 +278,9 @@ public final class PTZController {
             zoom: zoom.value,
             moving: motion.isMoving,
             aiTracking: control.tracking,
-            talkback: talkback
+            talkback: talkback,
+            privacyMode: privacy.mode,
+            privacyReason: privacy.reason
         )
         guard next != snapshot else { return }
         snapshot = next

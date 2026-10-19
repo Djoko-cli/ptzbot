@@ -17,6 +17,35 @@ struct BannerInputs: Equatable {
 enum StatusBanner {
     static let qrRefused = "QR code refusé : relancez l'appairage sur le Mac"
 
+    // Vie privée (spec § 6.5 bis). « Image et micro coupés » seulement quand ptzd a constaté le mode natif ; « protection
+    // en cours » tant que l'objectif n'a pas été vu détourné (rebranchement, démarrage, réveil de la caméra) ; sinon
+    // l'objectif est seulement détourné, et la raison donnée par ptzd dit pourquoi.
+    static let privacy = "Vie privée"
+    static let privacyNative = "Vie privée : image et micro coupés"
+    /// L'objectif n'a pas encore été vu à −70°, et le mode natif n'est pas lu.
+    static let privacyPending = "Vie privée : protection en cours"
+    /// Mode natif en cours, pas encore constaté.
+    static let privacyTilt = "Vie privée : objectif détourné"
+    static let privacyNoSDK = "Vie privée : objectif seulement détourné. Sans le SDK OBSBOT sur le Mac, l'image et le micro ne sont pas coupés."
+    static let privacyUpdating = "Vie privée : objectif seulement détourné, en attendant la mise à jour du SDK OBSBOT sur le Mac."
+    static let privacyFailed = "Vie privée : objectif seulement détourné, l'image et le micro n'ont pas pu être coupés."
+
+    /// Le texte de la vie privée selon le mode et la raison publiés par ptzd ; le texte d'avant pour un ptzd ancien.
+    static func privacyText(mode: PrivacyMode?, reason: PrivacyReason?) -> String {
+        switch mode {
+        case .native: privacyNative
+        case nil: privacy
+        case .tilt:
+            switch reason {
+            case nil: privacyTilt
+            case .pending: privacyPending
+            case .noSDK: privacyNoSDK
+            case .updating: privacyUpdating
+            case .failed: privacyFailed
+            }
+        }
+    }
+
     // Enregistrement (spec enregistrement § 6).
     static let photosDenied = "L'accès à Photos est refusé : autorisez-le dans Réglages › PTZBot › Photos."
     static let lowSpaceAtStart = "Espace insuffisant sur l'iPhone pour enregistrer."
@@ -58,7 +87,7 @@ enum StatusBanner {
                 return "Caméra débranchée"
             }
             if state.privacy {
-                return "Vie privée"
+                return privacyText(mode: state.privacyMode, reason: state.privacyReason)
             }
             if state.control == .failed {
                 return "Suivi IA non coupé : les mouvements peuvent être contrés"

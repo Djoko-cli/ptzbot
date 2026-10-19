@@ -522,7 +522,7 @@ public final class WebSocketServer {
 
     nonisolated static func isAdministration(_ message: ClientMessage) -> Bool {
         switch message {
-        case .adminWatch, .revoke, .kick, .unblock, .closePairing:
+        case .adminWatch, .revoke, .kick, .unblock, .closePairing, .aiUpdated:
             true
         default:
             false
@@ -544,6 +544,9 @@ public final class WebSocketServer {
             unblock(deviceID, from: id)
         case .closePairing:
             closePairing()
+        case .aiUpdated:
+            // PTZBot a recompilé obsbot-ai : l'utilitaire repart du nouveau programme (spec § 6.5 bis).
+            controller.aiUpdated()
         default:
             break
         }
@@ -806,6 +809,9 @@ public final class WebSocketServer {
         send(.authenticated, to: id)
         send(.state(controller.snapshot), to: id)
         publishAdmin()
+        // Ce que le client va afficher est relu sur la caméra (vie privée native, spec § 6.5 bis) ; un changement est
+        // diffusé à tous.
+        controller.clientConnected()
     }
 
     /// Le même iPhone s'authentifie de nouveau (Wi-Fi vers 4G) : l'ancienne connexion est peut-être

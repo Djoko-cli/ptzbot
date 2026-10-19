@@ -1,12 +1,21 @@
 import Foundation
 
-/// Garde `obsbot-ai serve` lancé pendant qu'un client pilote : le SDK n'est chargé qu'une fois, et un ordre
-/// part en quelques millisecondes au lieu de 4 s. L'utilitaire s'arrête après `idleDelay` sans activité.
+/// Garde `obsbot-ai serve` lancé : le SDK n'est chargé qu'une fois, et un ordre part en quelques millisecondes au lieu
+/// de 4 s. Par défaut, l'utilitaire s'arrête après `idleDelay` sans activité ; avec `keepWarm` (ptzd lancé avec le SDK,
+/// spec § 6.9), il reste chargé tant que ptzd tourne et n'est arrêté que par une réinitialisation, une mise à jour ou un
+/// incident, après quoi ptzd le relance (`prewarm`).
 ///
-/// Protocole : un ordre par ligne (`on` ou `off`) sur l'entrée de l'utilitaire. Sur sa sortie, les lignes
-/// préfixées par `obsbot-ai: ` sont des réponses (`ready` une fois le SDK prêt, puis `ok` ou `err <code>` par
-/// ordre) ; toute autre ligne est du bruit du SDK, ajouté au fichier de sortie. L'utilitaire se termine
-/// quand son entrée se ferme, ce qui arrive aussi si ptzd meurt.
+/// Protocole : un ordre par ligne (`on`, `off`, `privacy on`, `privacy off` ou `privacy status`) sur l'entrée de
+/// l'utilitaire. Sur sa sortie, les lignes préfixées par `obsbot-ai: ` sont des réponses (`ready` une fois le SDK prêt,
+/// puis `ok`, `ok <état> [<inclinaison>]` pour `privacy status`, ou `err <code> [<inclinaison>]` par ordre) ; toute
+/// autre ligne est du bruit du SDK, ajouté au fichier de sortie. L'utilitaire se termine quand son entrée se ferme, ce
+/// qui arrive aussi si ptzd meurt.
+///
+/// Un seul ordre à la fois : un ordre donné pendant un autre est refusé (`launchFailed`). `AIOrderQueue` les met à la
+/// file. `err 3` (« ordre inconnu ») vient d'un utilitaire plus ancien que ptzd : `unknownOrder`, et l'utilitaire est
+/// arrêté, pour que le suivant parte du programme recompilé (spec § 6.5 bis). Une **lecture** de l'état ratée
+/// (`err 2` de `privacy status`) n'arrête pas l'utilitaire : elle ne rend pas la session douteuse, et une session neuve
+/// coûterait 4 s. C'est le réconciliateur qui la renouvelle (`reset`) après deux lectures ratées de suite en mode natif.
 @MainActor
 public final class ResidentAIRunner: AIRunner {
     /// Identité d'une extrémité de tuyau (fstat), pour vérifier en test qu'aucune ne fuit.
@@ -58,8 +67,12 @@ public final class ResidentAIRunner: AIRunner {
     private let environment: [String: String]
     private let scheduler: any Scheduler
     private let idleDelay: TimeInterval
+    private let keepWarm: Bool
     private let readyTimeout: TimeInterval
     private let orderTimeout: TimeInterval
+    /// Les ordres de la vie privée native rendent la main tout de suite (0 ms mesuré le 19/10 : la caméra bascule
+    /// ensuite d'elle-même) ; même délai qu'un changement de suivi par défaut (spec § 6.5 bis).
+    private let privacyOrderTimeout: TimeInterval
     private let log: LogSink
 
     /// L'utilitaire en service.
@@ -68,8 +81,15 @@ public final class ResidentAIRunner: AIRunner {
     private var stopping: Helper?
     /// Un lancement est demandé alors que `stopping` n'a pas fini.
     private var wanted = false
+    /// Réponse de l'utilitaire à un ordre : `ok`, avec les mots qui suivent (l'état et l'inclinaison lus pour
+    /// `privacy status`), ou l'échec, avec les mots qui suivent le code (l'inclinaison d'une lecture ratée).
+    private enum Reply {
+        case ok([Substring])
+        case failed(AIResult, [Substring])
+    }
+
     /// Ordre en attente que l'utilitaire soit prêt, puis en cours.
-    private var order: (on: Bool, completion: @MainActor @Sendable (AIResult) -> Void, sent: Bool)?
+    private var order: (order: AIOrder, completion: @MainActor @Sendable (Reply) -> Void, sent: Bool)?
     /// Du lancement à « ready » : le SDK met environ 4 s, 10 s de recherche de la caméra au pire.
     private var startTimer: (any Cancellable)?
     /// De l'écriture de l'ordre à sa réponse.
@@ -77,8 +97,11 @@ public final class ResidentAIRunner: AIRunner {
     private var idleTimer: (any Cancellable)?
     private var lastIdleRearm: TimeInterval?
     private var noPrewarmUntil: TimeInterval?
-    /// Extrémités de tuyau de tous les utilitaires lancés (tests).
+    #if DEBUG
+    /// Extrémités de tuyau de tous les utilitaires lancés (tests seulement : en production, le tableau grossirait de
+    /// quatre entrées à chaque lancement, sans limite).
     private(set) var recordedPipes: [PipeIdentity] = []
+    #endif
 
     public init(
         executableURL: URL,
@@ -86,8 +109,10 @@ public final class ResidentAIRunner: AIRunner {
         environment: [String: String] = [:],
         scheduler: any Scheduler,
         idleDelay: TimeInterval = 600,
+        keepWarm: Bool = false,
         readyTimeout: TimeInterval = 25,
         orderTimeout: TimeInterval = 5,
+        privacyOrderTimeout: TimeInterval = 5,
         log: @escaping LogSink = { _ in }
     ) {
         self.executableURL = executableURL
@@ -95,8 +120,10 @@ public final class ResidentAIRunner: AIRunner {
         self.environment = environment
         self.scheduler = scheduler
         self.idleDelay = idleDelay
+        self.keepWarm = keepWarm
         self.readyTimeout = readyTimeout
         self.orderTimeout = orderTimeout
+        self.privacyOrderTimeout = privacyOrderTimeout
         self.log = log
     }
 
@@ -121,12 +148,61 @@ public final class ResidentAIRunner: AIRunner {
     }
 
     public func run(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        submit(.tracking(on: on)) { completion(Self.result(of: $0)) }
+    }
+
+    public func runPrivacy(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        submit(.privacy(on: on)) { completion(Self.result(of: $0)) }
+    }
+
+    /// `privacy status` : « ok run 69.8 » ou « ok privacy 84.9 » (l'inclinaison peut manquer), « err 2 84.9 » si l'état
+    /// ne se lit pas. Un autre mot est un échec, jamais un état deviné ; l'inclinaison reste le second témoin.
+    public func readPrivacy(completion: @escaping @MainActor @Sendable (PrivacyReading) -> Void) {
+        submit(.privacyStatus) { [weak self] reply in
+            switch reply {
+            case let .ok(words):
+                let pitch = words.dropFirst().first.flatMap { Double($0) }
+                if let word = words.first, let state = CameraRunState(rawValue: String(word)) {
+                    completion(.state(state, pitch: pitch))
+                } else {
+                    self?.log("obsbot-ai : état illisible (« \(words.joined(separator: " ")) »).")
+                    completion(.failed(.sdkError, pitch: pitch))
+                }
+            case let .failed(result, words):
+                completion(.failed(result, pitch: words.first.flatMap { Double($0) }))
+            }
+        }
+    }
+
+    private static func result(of reply: Reply) -> AIResult {
+        switch reply {
+        case .ok: .success
+        case let .failed(result, _): result
+        }
+    }
+
+    /// Sans l'utilitaire installé (pas de SDK), la vie privée native n'existe pas (spec § 6.5 bis).
+    public var supportsNativePrivacy: Bool {
+        FileManager.default.isExecutableFile(atPath: executableURL.path)
+    }
+
+    /// L'utilitaire n'est jamais arrêté pour inactivité (`keepWarm`).
+    public var keepsWarm: Bool {
+        keepWarm
+    }
+
+    /// Le SDK est prêt : un utilitaire en service a dit « ready ». Un ordre part alors en quelques millisecondes.
+    public var isReady: Bool {
+        helper?.ready ?? false
+    }
+
+    private func submit(_ newOrder: AIOrder, completion: @escaping @MainActor @Sendable (Reply) -> Void) {
         guard order == nil else {
-            completion(.launchFailed("ordre de suivi IA précédent encore en cours"))
+            completion(.failed(.launchFailed("ordre précédent encore en cours"), []))
             return
         }
         restartIdleTimer()
-        order = (on, completion, false)
+        order = (newOrder, completion, false)
         ensureHelper()
         if order != nil, !(helper?.ready ?? false), startTimer == nil {
             // Un ancien utilitaire finit de mourir : l'attente est bornée comme un démarrage.
@@ -140,7 +216,7 @@ public final class ResidentAIRunner: AIRunner {
     public func reset() {
         noPrewarmUntil = nil
         stopHelper(terminate: false)
-        finish(.launchFailed("utilitaire réinitialisé"))
+        fail(.launchFailed("utilitaire réinitialisé"))
     }
 
     /// Arrête l'utilitaire (fermeture de son entrée) ; un ordre en cours échoue.
@@ -148,7 +224,7 @@ public final class ResidentAIRunner: AIRunner {
         idleTimer?.cancel()
         idleTimer = nil
         stopHelper(terminate: false)
-        finish(.launchFailed("ptzd s'arrête"))
+        fail(.launchFailed("ptzd s'arrête"))
     }
 
     // MARK: - Cycle de vie de l'utilitaire
@@ -183,13 +259,15 @@ public final class ResidentAIRunner: AIRunner {
             }
         }
         // Avant le lancement : Process referme lui-même ses copies des extrémités du fils.
+        #if DEBUG
         recordPipes(of: helper)
+        #endif
         do {
             try process.run()
         } catch {
             try? helper.log?.close()
             noPrewarmUntil = scheduler.now + Self.backoff
-            finish(.launchFailed(error.localizedDescription))
+            fail(.launchFailed(error.localizedDescription))
             return
         }
         // Écrire dans un tuyau dont l'utilitaire est mort ne doit pas tuer ptzd (pas de SIGPIPE).
@@ -202,6 +280,7 @@ public final class ResidentAIRunner: AIRunner {
         read(helper)
     }
 
+    #if DEBUG
     private func recordPipes(of helper: Helper) {
         for handle in [
             helper.input.fileHandleForReading, helper.input.fileHandleForWriting,
@@ -213,6 +292,7 @@ public final class ResidentAIRunner: AIRunner {
             }
         }
     }
+    #endif
 
     /// Lit la sortie de l'utilitaire sur un fil à part et rend chaque morceau, dans l'ordre, à la file principale.
     private func read(_ helper: Helper) {
@@ -278,17 +358,32 @@ public final class ResidentAIRunner: AIRunner {
         case "ok":
             source.served = true
             noPrewarmUntil = nil
-            finish(.success)
+            finish(.ok([]))
+        case _ where reply.hasPrefix("ok "):
+            // `privacy status` : l'état et l'inclinaison suivent « ok ».
+            source.served = true
+            noPrewarmUntil = nil
+            finish(.ok(reply.dropFirst(3).split(separator: " ")))
         default:
-            let code = Int32(reply.split(separator: " ").last ?? "") ?? -1
+            // « err <code> », suivi de l'inclinaison pour une lecture ratée.
+            let words = reply.split(separator: " ")
+            let code = words.count > 1 ? Int32(words[1]) ?? -1 : -1
             if code == 1 {
                 // Caméra introuvable : l'utilitaire sort de lui-même.
-                finish(.cameraNotFound)
+                fail(.cameraNotFound)
+            } else if code == 2, order?.order == .privacyStatus {
+                // Lecture de l'état ratée : la session n'est pas douteuse, l'utilitaire reste (constat D).
+                finish(.failed(.sdkError, Array(words.dropFirst(2))))
             } else {
-                // Session du SDK douteuse : la prochaine fois, un utilitaire neuf. L'arrêt vient avant la
-                // réponse, pour qu'un ordre donné par le rappel parte sur le nouveau.
+                // Session du SDK douteuse, ou utilitaire plus ancien que l'ordre (code 3) : la prochaine fois, un
+                // utilitaire neuf, lancé depuis le programme (peut-être recompilé entre-temps). L'arrêt vient avant
+                // la réponse, pour qu'un ordre donné par le rappel parte sur le nouveau.
                 stopHelper(terminate: false)
-                finish(code == 2 ? .sdkError : .unexpectedExit(code))
+                switch code {
+                case 2: fail(.sdkError)
+                case 3: fail(.unknownOrder)
+                default: fail(.unexpectedExit(code))
+                }
             }
         }
     }
@@ -297,15 +392,18 @@ public final class ResidentAIRunner: AIRunner {
         guard let helper, helper.ready, let current = order, !current.sent else { return }
         order?.sent = true
         do {
-            try helper.input.fileHandleForWriting.write(contentsOf: Data((current.on ? "on\n" : "off\n").utf8))
+            try helper.input.fileHandleForWriting.write(contentsOf: Data((current.order.line + "\n").utf8))
         } catch {
             log("obsbot-ai : écriture de l'ordre impossible (\(error)).")
             stopHelper(terminate: false)
-            finish(.unexpectedExit(-1))
+            fail(.unexpectedExit(-1))
             return
         }
         orderTimer?.cancel()
-        orderTimer = scheduler.schedule(after: orderTimeout) { [weak self] in
+        // Un ordre de la vie privée native a son propre délai ; la lecture de l'état (1 à 5 ms, plus la position, jusqu'à
+        // 1 s mesuré) a celui d'un changement de suivi.
+        let timeout: TimeInterval = if case .privacy = current.order { privacyOrderTimeout } else { orderTimeout }
+        orderTimer = scheduler.schedule(after: timeout) { [weak self] in
             self?.expired(waitingFor: "réponse")
         }
     }
@@ -322,7 +420,7 @@ public final class ResidentAIRunner: AIRunner {
         log("obsbot-ai : pas de \(what) à temps.")
         noPrewarmUntil = scheduler.now + Self.backoff
         stopHelper(terminate: true)
-        finish(.timeout)
+        fail(.timeout)
     }
 
     private func outputClosed(_ closed: Helper) {
@@ -366,7 +464,7 @@ public final class ResidentAIRunner: AIRunner {
                 noPrewarmUntil = scheduler.now + Self.backoff
             }
             // Le 1 n'est « caméra introuvable » que pour une vraie sortie : un SIGHUP vaut aussi 1.
-            finish(ended.exitedNormally && status == 1 ? .cameraNotFound : .unexpectedExit(status))
+            fail(ended.exitedNormally && status == 1 ? .cameraNotFound : .unexpectedExit(status))
         } else if ended === stopping {
             stopping = nil
             if wanted {
@@ -409,15 +507,21 @@ public final class ResidentAIRunner: AIRunner {
         }
     }
 
-    private func finish(_ result: AIResult) {
+    private func finish(_ reply: Reply) {
         guard let current = order else { return }
         order = nil
         orderTimer?.cancel()
         orderTimer = nil
-        current.completion(result)
+        current.completion(reply)
+    }
+
+    private func fail(_ result: AIResult) {
+        finish(.failed(result, []))
     }
 
     private func restartIdleTimer() {
+        // Gardé chaud : aucune échéance d'inactivité, l'utilitaire vit autant que ptzd.
+        guard !keepWarm else { return }
         let now = scheduler.now
         if idleTimer != nil, let last = lastIdleRearm, now - last < Self.rearmInterval {
             return

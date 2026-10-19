@@ -100,6 +100,25 @@ struct PanelModelTests {
         ])
     }
 
+    @Test("obsbot-ai recompilé : aiUpdated envoyé tout de suite, ou à la prochaine connexion ; le dernier refus reste affiché")
+    func aiUpdated() throws {
+        // Hors connexion : le message attend la connexion suivante.
+        model.aiUpdated()
+        #expect(transport.sent.isEmpty)
+        try connect()
+        #expect(sent == [.adminWatch, .aiUpdated])
+        // Connecté : tout de suite, une seule fois par recompilation.
+        try receive(.error(code: .badMessage, message: "x"))
+        model.aiUpdated()
+        #expect(sent == [.adminWatch, .aiUpdated, .aiUpdated])
+        #expect(model.lastError == "ptzd a refusé ce message.")
+        transport.emit(.closed)
+        scheduler.advance(by: PanelModel.retryDelay)
+        transport.emit(.opened)
+        try receive(.authenticated)
+        #expect(sent.filter { $0 == .aiUpdated }.count == 2)
+    }
+
     @Test("Refus de ptzd : texte de l'app choisi d'après le code (pas celui de ptzd), effacé à l'action suivante")
     func errors() throws {
         try connect()

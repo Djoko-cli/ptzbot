@@ -111,7 +111,7 @@ struct PTZControllerTests {
         #expect(controller.handle(.privacy(on: true), from: 1) == nil)
         #expect(controller.snapshot.privacy)
         #expect(!controller.snapshot.moving)
-        #expect(camera.absoluteCommands.last?.tilt == PrivacyKeeper.privacyTilt)
+        #expect(camera.absoluteCommands.last?.tilt == PrivacyReconciler.privacyTilt)
         #expect(controller.handle(.move(pan: 1, tilt: 0), from: 1)?.code == .privacyActive)
         #expect(controller.handle(.zoom(value: 10), from: 1)?.code == .privacyActive)
         #expect(controller.handle(.move(pan: 0, tilt: 0), from: 1) == nil)
@@ -124,7 +124,7 @@ struct PTZControllerTests {
         _ = controller.handle(.privacy(on: true), from: 1)
         #expect(controller.snapshot.tilt == -1)
         scheduler.advance(by: PTZController.settleDelay)
-        #expect(controller.snapshot.tilt == PrivacyKeeper.privacyTilt)
+        #expect(controller.snapshot.tilt == PrivacyReconciler.privacyTilt)
     }
 
     @Test("Sortie de vie privée : position et zoom relus")
@@ -287,11 +287,11 @@ struct PTZControllerTests {
         let controller = makeController()
         camera.isPresent = true
         controller.cameraPresenceChanged(true)
-        #expect(camera.absoluteCommands == [PanTiltPosition(pan: 12, tilt: PrivacyKeeper.privacyTilt)])
+        #expect(camera.absoluteCommands == [PanTiltPosition(pan: 12, tilt: PrivacyReconciler.privacyTilt)])
         #expect(runner.runCount == 1)
         #expect(controller.snapshot.camera == .connected)
         scheduler.advance(by: PTZController.settleDelay)
-        #expect(controller.snapshot.tilt == PrivacyKeeper.privacyTilt)
+        #expect(controller.snapshot.tilt == PrivacyReconciler.privacyTilt)
     }
 
     @Test("La déconnexion du pilote arrête la nacelle")
@@ -312,7 +312,7 @@ struct PTZControllerTests {
         scheduler.advance(by: PTZController.settleDelay)
         #expect(camera.absoluteCommands.count == 2)
         scheduler.advance(by: PTZController.settleDelay)
-        #expect(controller.snapshot.tilt == PrivacyKeeper.privacyTilt)
+        #expect(controller.snapshot.tilt == PrivacyReconciler.privacyTilt)
         #expect(log.lines.contains { $0.contains("ignoré") })
     }
 
@@ -347,8 +347,8 @@ struct PTZControllerTests {
             scheduler.advance(by: delay)
         }
         #expect(camera.absoluteCommands.count == 7)
-        #expect(camera.absoluteCommands.allSatisfy { $0.tilt == PrivacyKeeper.privacyTilt })
-        #expect(controller.snapshot.tilt == PrivacyKeeper.privacyTilt)
+        #expect(camera.absoluteCommands.allSatisfy { $0.tilt == PrivacyReconciler.privacyTilt })
+        #expect(controller.snapshot.tilt == PrivacyReconciler.privacyTilt)
         // Un premier raté, puis une ligne par palier (2, 5, 10, 30 s) : pas à chaque essai de 30 s.
         #expect(log.lines.filter { $0.contains("ignoré") }.count == PTZController.privacyBackoff.count)
         scheduler.advance(by: 300)
@@ -366,7 +366,7 @@ struct PTZControllerTests {
         #expect(camera.absoluteCommands.count == 2)
         camera.failReads = false
         scheduler.advance(by: PTZController.privacyBackoff[0])
-        #expect(controller.snapshot.tilt == PrivacyKeeper.privacyTilt)
+        #expect(controller.snapshot.tilt == PrivacyReconciler.privacyTilt)
         #expect(scheduler.pendingCount == 0)
     }
 
@@ -383,7 +383,7 @@ struct PTZControllerTests {
             scheduler.advance(by: delay)
         }
         #expect(camera.absoluteCommands.count == 2 + PTZController.maxResends)
-        #expect(controller.snapshot.tilt == PrivacyKeeper.privacyTilt)
+        #expect(controller.snapshot.tilt == PrivacyReconciler.privacyTilt)
     }
 
     @Test("Fin de la coupure du suivi IA en vie privée : ordre de vie privée renvoyé et revérifié")
@@ -398,9 +398,9 @@ struct PTZControllerTests {
         camera.position = PanTiltPosition(pan: 12, tilt: 10)
         runner.finish(.success)
         #expect(controller.snapshot.control == .ready)
-        #expect(camera.absoluteCommands == Array(repeating: PanTiltPosition(pan: 12, tilt: PrivacyKeeper.privacyTilt), count: 2))
+        #expect(camera.absoluteCommands == Array(repeating: PanTiltPosition(pan: 12, tilt: PrivacyReconciler.privacyTilt), count: 2))
         scheduler.advance(by: PTZController.settleDelay)
-        #expect(controller.snapshot.tilt == PrivacyKeeper.privacyTilt)
+        #expect(controller.snapshot.tilt == PrivacyReconciler.privacyTilt)
         // Un échec de l'utilitaire réapplique aussi (rebranchement en vie privée : réapplication, puis coupure).
         controller.cameraPresenceChanged(true)
         #expect(camera.absoluteCommands.count == 3)
@@ -440,7 +440,7 @@ struct PTZControllerTests {
         let controller = makeController()
         controller.cameraPresenceChanged(true)
         _ = controller.handle(.privacy(on: true), from: 1)
-        camera.position = PanTiltPosition(pan: camera.position.pan + 10, tilt: PrivacyKeeper.privacyTilt)
+        camera.position = PanTiltPosition(pan: camera.position.pan + 10, tilt: PrivacyReconciler.privacyTilt)
         scheduler.advance(by: PTZController.settleDelay)
         #expect(camera.absoluteCommands.count == 1)
         #expect(!log.lines.contains { $0.contains("ignoré") })

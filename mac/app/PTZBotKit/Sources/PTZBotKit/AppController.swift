@@ -48,6 +48,9 @@ public final class AppController {
     @ObservationIgnored private var sdkRefresh: Task<Void, Never>?
     /// `config.json` est prêt (créé au besoin) : l'app relit le port de ptzd.
     @ObservationIgnored public var onConfigReady: (@MainActor () -> Void)?
+    /// obsbot-ai vient d'être recompilé ou réinstallé : ptzd doit relancer son utilitaire (message `aiUpdated`, spec
+    /// § 6.5 bis). Jamais pour une ancienne installation, dont le ptzd a son propre obsbot-ai.
+    @ObservationIgnored public var onAIUpdated: (@MainActor () -> Void)?
 
     public init(
         supervisor: ServiceSupervisor,
@@ -148,9 +151,25 @@ public final class AppController {
         if await Task.detached(operation: { installer.needsRecompile() }).value {
             sdkStatus = .recompiling
             // Un échec laisse l'ancien obsbot-ai en service ; `status()` le dit.
-            _ = await Task.detached { (try? installer.recompileIfNeeded()) ?? false }.value
+            let recompiled = await Task.detached { (try? installer.recompileIfNeeded()) ?? false }.value
+            if recompiled {
+                // ptzd a pu lancer l'ancien obsbot-ai avant la fin de la recompilation (il démarre avant) : il le relance.
+                aiUpdated()
+            }
         }
         sdkStatus = await Task.detached { installer.status() }.value
+    }
+
+    /// Le SDK vient d'être installé par la fenêtre « SDK OBSBOT » : obsbot-ai est neuf, ptzd relance son utilitaire,
+    /// puis l'état du SDK est relu.
+    public func sdkInstalled() async {
+        aiUpdated()
+        await refreshSDK()
+    }
+
+    private func aiUpdated() {
+        guard legacy == .none else { return }
+        onAIUpdated?()
     }
 
     /// Panneau ouvert : si les outils de développement manquaient, ils ont pu être installés depuis.

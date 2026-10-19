@@ -908,7 +908,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "obsbot-ai could not be compiled: the previous SDK is kept. Details are in the obsbot-ai-compilation.log log."
+            "value": "obsbot-ai could not be compiled: the previous SDK is kept. Details are in obsbot-ai-compilation.log."
           }
         },
         "fr": {
@@ -1044,7 +1044,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Details are in the obsbot-ai-compilation.log log."
+            "value": "Details are in obsbot-ai-compilation.log."
           }
         },
         "fr": {
@@ -1782,6 +1782,244 @@
           "stringUnit": {
             "state": "translated",
             "value": "Suivi IA non modifié."
+          }
+        }
+      }
+    },
+    "Coupe l'image et le micro de la caméra": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turns off the camera's image and microphone"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Coupe l'image et le micro de la caméra"
+          }
+        }
+      }
+    },
+    "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Without the OBSBOT SDK, privacy only turns the lens away: the image and microphone are not turned off."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés."
+          }
+        }
+      }
+    },
+    "La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy could not turn off the camera's image or microphone: the lens is only turned away."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné."
+          }
+        }
+      }
+    },
+    "La vie privée n'a pas pu être levée : la caméra est restée en mode vie privée.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy could not be turned off: the camera stayed in privacy mode."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La vie privée n'a pas pu être levée : la caméra est restée en mode vie privée."
+          }
+        }
+      }
+    },
+    "La vie privée n'a pas pu être levée : l'état de la caméra ne se lit pas.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy could not be turned off: the camera's state cannot be read."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La vie privée n'a pas pu être levée : l'état de la caméra ne se lit pas."
+          }
+        }
+      }
+    },
+    "La vie privée n'a pas pu être levée : obsbot-ai n'est pas à jour.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy could not be turned off: obsbot-ai is out of date."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La vie privée n'a pas pu être levée : obsbot-ai n'est pas à jour."
+          }
+        }
+      }
+    },
+    "Protection en cours": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protection in progress"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Protection en cours"
+          }
+        }
+      }
+    },
+    "Image et micro coupés": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image and microphone off"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image et micro coupés"
+          }
+        }
+      }
+    },
+    "Objectif détourné": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lens turned away"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Objectif détourné"
+          }
+        }
+      }
+    },
+    "Détourne l'objectif de la caméra": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turns the camera's lens away"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Détourne l'objectif de la caméra"
+          }
+        }
+      }
+    },
+    "obsbot-ai doit être recompilé : installez les outils de développement d'Apple pour que la vie privée coupe l'image et le micro. En attendant, elle détourne seulement l'objectif.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "obsbot-ai must be recompiled: install Apple's developer tools so that privacy turns off the image and microphone. Until then, it only turns the lens away."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "obsbot-ai doit être recompilé : installez les outils de développement d'Apple pour que la vie privée coupe l'image et le micro. En attendant, elle détourne seulement l'objectif."
+          }
+        }
+      }
+    },
+    "La recompilation d'obsbot-ai a échoué : la vie privée détourne seulement l'objectif. Le détail est dans le journal obsbot-ai-compilation.log.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "obsbot-ai could not be recompiled: privacy only turns the lens away. Details are in obsbot-ai-compilation.log."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La recompilation d'obsbot-ai a échoué : la vie privée détourne seulement l'objectif. Le détail est dans le journal obsbot-ai-compilation.log."
+          }
+        }
+      }
+    },
+    "Mise à jour du SDK OBSBOT en cours : la vie privée détourne seulement l'objectif pour l'instant.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OBSBOT SDK update in progress: for now, privacy only turns the lens away."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mise à jour du SDK OBSBOT en cours : la vie privée détourne seulement l'objectif pour l'instant."
+          }
+        }
+      }
+    },
+    "Suivi IA non modifié : obsbot-ai n'est pas à jour.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI tracking unchanged: obsbot-ai is out of date."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suivi IA non modifié : obsbot-ai n'est pas à jour."
           }
         }
       }
