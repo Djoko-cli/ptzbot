@@ -13,6 +13,8 @@ final class FakeCamera: CameraDevice {
     var ignoreAbsoluteCommands = 0
     /// Les relectures de position échouent tant que c'est vrai.
     var failReads = false
+    /// Les relectures de position rendent cette valeur au lieu de la vraie (relecture UVC périmée).
+    var staleRead: PanTiltPosition?
     /// Les ordres en vitesse sont refusés tant que c'est vrai.
     var refuseRelative = false
     /// Ordres en vitesse tentés, refusés compris.
@@ -60,7 +62,7 @@ final class FakeCamera: CameraDevice {
         if failReads {
             throw CameraError.ioKit(-536870212)
         }
-        return position
+        return staleRead ?? position
     }
 
     func readZoom() throws -> Int {

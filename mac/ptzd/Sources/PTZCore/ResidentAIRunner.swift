@@ -178,6 +178,11 @@ public final class ResidentAIRunner: AIRunner {
         FileManager.default.isExecutableFile(atPath: executableURL.path)
     }
 
+    /// Le SDK est prêt : un utilitaire en service a dit « ready ». Un ordre part alors en quelques millisecondes.
+    public var isReady: Bool {
+        helper?.ready ?? false
+    }
+
     private func submit(_ newOrder: AIOrder, completion: @escaping @MainActor @Sendable (Reply) -> Void) {
         guard order == nil else {
             completion(.failed(.launchFailed("ordre précédent encore en cours"), []))

@@ -18,10 +18,14 @@ import NacelleProtocol
 ///   lente ou une vérification s'arrêtent tout de suite. Aucun ordre n'est croisé : l'utilitaire n'en traite qu'un à la
 ///   fois, et le réconciliateur n'en donne jamais un second avant la réponse du premier.
 ///
-/// Entrée : prise de la main sur le suivi IA, inclinaison à −70°, attente que la caméra y soit, `privacy on`, lectures
-/// jusqu'à la bascule ; deux essais, puis la protection à −70° seule, vérifiée sans fin. Sortie : `privacy off` (avec
-/// le SDK, quel que soit le mode), lectures jusqu'à `run` (la remontée propre de la caméra est alors finie), puis zoom
-/// et position mémorisée. Un ancien obsbot-ai (« ordre inconnu ») laisse la protection à −70° jusqu'à sa recompilation.
+/// Entrée rapide (banc du 19/10, « Accélération ») : SDK prêt et caméra éveillée, `privacy on` directement depuis la
+/// position courante, puis relectures serrées jusqu'à la bascule ; deux essais. Repli : inclinaison à −70°, attente que
+/// la caméra y soit, puis `privacy on` (utilitaire pas prêt, état illisible, branchement) ; ou la protection à −70°
+/// seule, vérifiée sans fin (deux échecs du mode natif, pas de SDK, utilitaire à recompiler). Sortie : `privacy off`
+/// (avec le SDK, quel que soit le mode), relectures serrées jusqu'à `run` (la caméra a alors repris d'elle-même sa
+/// position d'entrée), puis position et zoom relus : à `saved`, rien d'autre ; sinon zoom et position mémorisée
+/// renvoyés, vérifiés. Un ancien obsbot-ai (« ordre inconnu ») laisse la protection à −70° jusqu'à sa recompilation.
+/// Chaque étape a sa ligne de journal, avec sa durée (spec § 6.5 bis, « journal »).
 @MainActor
 public final class PrivacyReconciler {
     // MARK: - Réglages (spec § 6.5 bis, mesures sur la vraie caméra du 19/10)
@@ -38,24 +42,30 @@ public final class PrivacyReconciler {
     /// Protection par l'inclinaison : la vérification ne s'arrête jamais ; délais avant chaque nouvelle vérification
     /// après un renvoi, le dernier se répétant indéfiniment.
     public static let privacyBackoff: [TimeInterval] = [2, 5, 10, 30]
-    /// Attente de l'inclinaison : une relecture à `settleDelay`, puis toutes les `pollInterval`, jusqu'à deux relectures
-    /// de suite à moins de `stableTolerance` l'une de l'autre, près de −70°.
-    public static let pollInterval: TimeInterval = 0.5
+    /// Relectures serrées pendant une bascule et pendant l'attente de l'inclinaison (spec § 6.5 bis, « Accélération ») :
+    /// l'état se lit en 1 à 5 ms, la position en 50 à 100 ms (mesuré). Attente de l'inclinaison : une relecture à
+    /// `settleDelay`, puis toutes les `pollInterval`, jusqu'à deux relectures de suite à moins de `stableTolerance` l'une
+    /// de l'autre, près de −70°.
+    public static let pollInterval: TimeInterval = 0.15
     public static let stableTolerance: Double = 1
     /// Délai maximal de l'attente de l'inclinaison avant le mode natif : passé ce délai, le mode natif part quand même
     /// (l'objectif n'étant pas vu à −70°, la protection reste « en cours »).
     public static let tiltWaitLimit: TimeInterval = 8
-    /// Un ordre natif rend la main tout de suite, puis la caméra bascule : état 3 en moins de 0,6 s à l'entrée, état 1
-    /// vers 1,7 s après le réveil (mesuré). Première lecture de l'état après `switchDelay`, puis toutes les
-    /// `pollInterval` jusqu'à `switchLimit` après la réponse ; passé ce délai, l'essai n'a pas pris.
-    public static let switchDelay: TimeInterval = 1
+    /// Un ordre natif rend la main tout de suite, puis la caméra bascule : état 3 en 0,24 s à l'entrée, état 1 vers
+    /// 1,5 à 1,7 s après le réveil (mesuré). Première lecture de l'état après `switchDelay`, puis toutes les
+    /// `pollInterval` jusqu'à `switchLimit` après la réponse ; passé ce délai, l'essai n'a pas pris. Une lecture faite
+    /// avant la bascule rend l'état d'avant : elle est simplement refaite.
+    public static let switchDelay: TimeInterval = pollInterval
     public static let switchLimit: TimeInterval = 4
-    /// Réveil confirmé par le seul témoin (état illisible) : la nacelle remonte en 0,6 s, mais l'état ne passe à 1 que
-    /// vers 1,7 s ; aucun ordre de position avant `witnessWakeDelay` après la réponse.
+    /// Réveil confirmé par le seul témoin (état illisible) : la nacelle remonte en 1,1 s au plus, mais l'état ne passe à 1
+    /// que vers 1,5 à 1,7 s ; aucun ordre de position avant `witnessWakeDelay` après la réponse.
     public static let witnessWakeDelay: TimeInterval = 2.5
     /// Une caméra qui pouvait être en mode natif est lue éveillée : sa remontée est finie quand l'état `run` se lit
-    /// (remontée en moins de 0,6 s, état 1 vers 1,7 s, mesuré). Marge avant le premier ordre de position.
+    /// (remontée en 1,1 s au plus, état 1 vers 1,5 à 1,7 s, mesuré). Marge avant le premier ordre de position.
     public static let riseMargin: TimeInterval = 0.5
+    /// Sortie rapide : réveillée, la caméra reprend d'elle-même sa position d'entrée (mesuré le 19/10). Relue à moins de
+    /// `returnTolerance` de `saved` sur chaque axe, zoom égal, rien n'est renvoyé.
+    public static let returnTolerance: Double = 2
     /// Délai avant un nouvel essai de sortie, ou une nouvelle lecture d'un état illisible.
     public static let retryDelay: TimeInterval = 1
     /// Essais au plus d'une entrée ou d'une sortie native.
@@ -149,6 +159,8 @@ public final class PrivacyReconciler {
         let deadline: TimeInterval
         /// L'inclinaison lue par la lecture d'avant, pour juger la nacelle immobile (m4).
         var lastPitch: Double?
+        /// Lectures faites pendant cette bascule (journal).
+        var reads = 0
     }
 
     /// Pourquoi une sortie échoue, pour un message exact.
@@ -221,6 +233,16 @@ public final class PrivacyReconciler {
     /// Le Mac est sorti de veille à cet instant (horloge du planificateur) : un branchement tout proche n'est pas un
     /// rebranchement après une coupure d'alimentation.
     private var lastWake: TimeInterval?
+    /// Branchement sans lecture de l'état (rebranchement, vie privée par l'inclinaison retenue) : la caméra revient
+    /// peut-être éveillée et droite, l'entrée passe par le repli (−70° tout de suite).
+    private var plugged = false
+    /// La dernière lecture n'a pas rendu l'état (lecture ratée, ou témoin seul) : l'entrée suivante passe par le repli.
+    private var stateUnreadable = false
+    /// La dernière inclinaison lue par le SDK (positive vers le bas), pour comparer le retour de la caméra à `saved`.
+    private var lastPitch: Double?
+    /// Journal : début de la séquence en cours (demande, réapplication), et du dernier ordre natif.
+    private var sequenceStart: TimeInterval?
+    private var orderStart: TimeInterval = 0
     /// Le client à prévenir d'un échec ; nil pour une réapplication (démarrage, branchement).
     private var requester: ClientID?
     /// Dernier ordre absolu envoyé, pour la vérification du § 6.5.
@@ -340,11 +362,15 @@ public final class PrivacyReconciler {
         requester = nil
         lastTarget = nil
         pendingTake = false
+        plugged = false
         guard present, isActive else { return }
+        begin(wanted ? "réapplication au branchement de la caméra" : "la sortie reprend au branchement de la caméra")
         if replugged, mayBeNative {
             log("Caméra rebranchée : elle revient éveillée et droite ; protection à −70° tout de suite, puis le mode natif.")
             setMayBeNative(false)
         }
+        // Sans lecture d'abord, la caméra peut filmer (éveillée et droite) : le repli, −70° tout de suite.
+        plugged = wanted && !mayBeNative
         if wanted {
             if runner.supportsNativePrivacy && mayBeNative {
                 // Peut-être encore en mode natif : la coupure du suivi IA seulement une fois la caméra vue éveillée.
@@ -437,12 +463,14 @@ public final class PrivacyReconciler {
         if isActive {
             // Une sortie est en cours : elle s'arrête à la prochaine étape et repart vers la vie privée. `saved` reste la
             // position d'avant la vie privée.
+            begin("retour à la vie privée demandé pendant la sortie (client \(client))")
             awake = false
             persist()
             reconcile(interrupt: true)
             return nil
         }
         // Entrée demandée : la seule qui écrit `saved`.
+        begin("entrée demandée (client \(client))")
         try? motion.stop()
         zoom.cancelPending()
         saved = motion.position.map { SavedPosition(pan: $0.pan, tilt: $0.tilt, zoom: zoom.value) }
@@ -455,8 +483,10 @@ public final class PrivacyReconciler {
             mayBeNative = false
         }
         persist()
-        if !mayBeNative {
-            // Protection immédiate : l'inclinaison part tout de suite (spec § 6.5).
+        // Chemin rapide : rien ici, `privacy on` part de la position courante (`advanceEntry`). Repli : la protection
+        // immédiate par l'inclinaison part tout de suite (spec § 6.5), le mode natif ensuite.
+        if !mayBeNative, let cause = fallbackCause() {
+            note("chemin de repli, −70° d'abord (\(cause))")
             do {
                 try sendTiltOrThrow()
             } catch {
@@ -467,6 +497,7 @@ public final class PrivacyReconciler {
                     saved = nil
                     lastTarget = nil
                     persist()
+                    end("entrée annulée, inclinaison refusée")
                     return failure(error)
                 }
                 log("Inclinaison de la vie privée refusée (\(error)) : le mode natif part tout de suite ; l'inclinaison sera renvoyée s'il ne tient pas.")
@@ -481,6 +512,7 @@ public final class PrivacyReconciler {
         guard isActive else { return nil }
         requester = client
         guard wanted else { return nil }
+        begin("sortie demandée (client \(client))")
         wanted = false
         attempts = 0
         readFailures = 0
@@ -573,11 +605,23 @@ public final class PrivacyReconciler {
         }
         switch tilt {
         case .none:
-            if !tiltRefused && sendTilt() {
-                startSettle()
-            } else {
+            if tiltRefused {
                 // Inclinaison refusée : le mode natif protégera l'image ; s'il ne tient pas, elle sera renvoyée.
                 tiltRefused = false
+                sendPrivacyOn()
+            } else if let cause = fallbackCause() {
+                // Repli : −70° d'abord, attente que la caméra y soit, puis le mode natif.
+                plugged = false
+                note("chemin de repli, −70° d'abord (\(cause))")
+                if sendTilt() {
+                    startSettle()
+                } else {
+                    sendPrivacyOn()
+                }
+            } else {
+                // Chemin rapide (spec § 6.5 bis, « Accélération ») : la caméra est éveillée, le SDK prêt. Le mode natif
+                // part de la position courante, d'un seul mouvement, et la caméra la reprendra d'elle-même au réveil.
+                note("chemin rapide, privacy on directement depuis la position courante")
                 sendPrivacyOn()
             }
         case .sent:
@@ -590,6 +634,31 @@ public final class PrivacyReconciler {
         case .placed:
             sendPrivacyOn()
         }
+    }
+
+    /// Pourquoi l'entrée passe par le repli (−70° d'abord), ou nil pour le chemin rapide : `privacy on` directement,
+    /// SDK prêt et caméra éveillée (spec § 6.5 bis, « Accélération »).
+    private func fallbackCause() -> String? {
+        if !runner.supportsNativePrivacy {
+            return "pas de SDK"
+        }
+        if updating {
+            return "obsbot-ai en attente de recompilation"
+        }
+        if gaveUp {
+            return "deux échecs du mode natif"
+        }
+        if plugged {
+            return "caméra branchée, peut-être éveillée et droite"
+        }
+        if stateUnreadable {
+            return "état réel illisible"
+        }
+        if !runner.isReady {
+            // Un ordre attendrait la session neuve du SDK (environ 4 s) : l'inclinaison protège tout de suite.
+            return "SDK pas encore prêt"
+        }
+        return nil
     }
 
     /// L'état réel est inconnu alors que la caméra peut être en mode natif : on le lit, sans aucun ordre de position.
@@ -620,9 +689,16 @@ public final class PrivacyReconciler {
 
     private func advanceExit() {
         if awake || exitsDirectly {
-            // Réveil constaté : sa remontée propre est finie, puis seulement la position mémorisée.
+            // Réveil constaté : sa remontée propre est finie. Sortie rapide : revenue d'elle-même à `saved`, rien
+            // d'autre ; sinon (entrée par le repli, caméra bougée entre-temps), une marge, puis la position mémorisée.
             if afterWake {
                 afterWake = false
+                if returnedToSaved() {
+                    lastTarget = nil
+                    endPrivacy()
+                    end("levée, caméra revenue d'elle-même à sa position d'avant")
+                    return
+                }
                 pause(Self.riseMargin) { $0.reconcile() }
             } else {
                 finishExit()
@@ -682,6 +758,8 @@ public final class PrivacyReconciler {
             let before = before ?? Known(real: real, mayBeNative: mayBeNative)
             real = nil
             switching = nil
+            orderStart = scheduler.now
+            note("\(Self.name(order)) envoyé")
             runner.runPrivacy(on: order == .on) { [weak self] result in
                 guard let self, current == ticket else { return }
                 step = .idle
@@ -714,9 +792,8 @@ public final class PrivacyReconciler {
             reconcile()
             return
         }
-        if result != .success {
-            log("obsbot-ai privacy \(order == .on ? "on" : "off") : \(result) ; l'état réel est relu.")
-        }
+        note("\(Self.name(order)) rendu (\(result == .success ? "ok" : "\(result)")) \(Self.seconds(scheduler.now - orderStart)) après l'ordre"
+            + (result == .success ? "" : " ; l'état réel est relu"))
         if order == .on, !wanted {
             // Une sortie a été demandée pendant l'ordre : `privacy off` part tout de suite, il remplace celui-ci.
             reconcile()
@@ -763,19 +840,27 @@ public final class PrivacyReconciler {
             return
         }
         let (seen, pitch, witness) = witnessed(reading)
+        if case .state = reading {
+            stateUnreadable = false
+        } else {
+            stateUnreadable = true
+        }
+        lastPitch = pitch
         if var current = switching {
+            current.reads += 1
             let target: CameraRunState = current.order == .on ? .privacy : .run
             var switched = seen == target
             if target == .run {
-                // Réveillée, elle a fini sa remontée : jamais encore dans la pose du mode natif, et immobile (deux
-                // inclinaisons de suite à moins d'1° l'une de l'autre : une remontée depuis une autre pose est plus longue
-                // que les 15° mesurés, m4). Dite réveillée par le seul témoin, elle ne l'est qu'une fois passé le délai
-                // de l'état `run`.
+                // Réveillée, elle a fini sa remontée : plus dans la pose du mode natif (sauf si sa position d'entrée,
+                // objectif très bas, y était déjà), et immobile (deux inclinaisons de suite à moins d'1° l'une de
+                // l'autre : une remontée peut durer plus que l'état `run`, m4). Dite réveillée par le seul témoin, elle ne
+                // l'est qu'une fois passé le délai de l'état `run`.
                 var still = true
                 if let pitch {
                     still = current.lastPitch.map { abs($0 - pitch) <= Self.stableTolerance } ?? false
                 }
-                switched = switched && (pitch ?? 0) < Self.nativePitch && still
+                let posed = pitch.map { $0 >= Self.nativePitch && !isEntryPose($0) } ?? false
+                switched = switched && !posed && still
                     && (witness == nil || scheduler.now - current.start >= Self.witnessWakeDelay)
             }
             current.lastPitch = pitch
@@ -786,9 +871,12 @@ public final class PrivacyReconciler {
                 return
             }
             switching = nil
-            if let witness {
-                log("Après privacy \(current.order == .on ? "on" : "off") : \(witness).")
-            }
+            // Une ligne pour toute la bascule, pas une par relecture.
+            let state = seen.map { "état \($0.rawValue) lu" } ?? "état illisible"
+            let reads = current.reads > 1 ? "\(current.reads) lectures" : "1 lecture"
+            let tilt = pitch.map { ", inclinaison SDK \(Self.pitchText($0))" } ?? ""
+            note("\(Self.name(current.order)), \(state) \(Self.seconds(scheduler.now - orderStart)) après l'ordre (\(reads)\(tilt))"
+                + (witness.map { " ; \($0)" } ?? ""))
             if let seen {
                 apply(seen, pitch: pitch)
                 if !switched {
@@ -831,9 +919,18 @@ public final class PrivacyReconciler {
     private func apply(_ state: CameraRunState, pitch: Double?) {
         let wasNative = mayBeNative
         readFailures = 0
+        // Lue : la caméra n'est plus « branchée sans lecture ».
+        plugged = false
         real = state
         setMayBeNative(state == .privacy)
+        if state == .privacy, wanted, sequenceStart != nil {
+            // Une relecture qui confirme, elle, ne dit rien.
+            end("mode natif constaté, image et micro coupés")
+        }
         guard state == .run else { return }
+        if wasNative, wanted, sequenceStart == nil {
+            begin("caméra lue éveillée pendant la vie privée, reprotection")
+        }
         if wasNative {
             // Lue éveillée alors qu'elle pouvait être en mode natif : elle en sort, ou ne l'a pas pris. Sa remontée est
             // finie quand l'état `run` se lit (mesuré) ; une marge encore avant tout ordre de position.
@@ -852,15 +949,21 @@ public final class PrivacyReconciler {
         }
     }
 
+    /// L'inclinaison lue par le SDK est celle de la position d'avant la vie privée : la caméra y revient d'elle-même au
+    /// réveil après une entrée rapide.
+    private func isEntryPose(_ pitch: Double) -> Bool {
+        saved.map { abs(-$0.tilt - pitch) < Self.returnTolerance } ?? false
+    }
+
     /// L'ordre natif n'a pas pris dans le délai de la bascule.
     private func noteFailedAttempt(_ order: NativeOrder, seen: CameraRunState) {
         if order == .on, wanted {
-            log("Vie privée native non constatée (état réel : \(seen.rawValue)), essai \(attempts)/\(Self.maxAttempts).")
+            note("mode natif non constaté (état réel : \(seen.rawValue)), essai \(attempts)/\(Self.maxAttempts)")
             if attempts >= Self.maxAttempts {
                 giveUp()
             }
         } else if order == .off, !wanted {
-            log("Caméra pas réveillée (état réel : \(seen.rawValue)), essai \(attempts)/\(Self.maxAttempts).")
+            note("caméra pas réveillée (état réel : \(seen.rawValue)), essai \(attempts)/\(Self.maxAttempts)")
         }
     }
 
@@ -868,7 +971,7 @@ public final class PrivacyReconciler {
     private func giveUp() {
         guard !gaveUp else { return }
         gaveUp = true
-        log("Vie privée native impossible après \(Self.maxAttempts) essais : l'objectif reste détourné.")
+        end("repli après \(Self.maxAttempts) essais du mode natif, l'objectif reste détourné à −70°")
         if let requester {
             onClientError?(requester, .uvcFailed, PrivacyFailureText.fallbackToTilt)
         }
@@ -878,7 +981,7 @@ public final class PrivacyReconciler {
     /// réconciliateur la ramène vers un état sûr (mode natif confirmé, ou protection à −70°). Un nouvel ordre de sortie
     /// la retente toujours.
     private func exitFailed(_ cause: ExitFailure) {
-        log("La vie privée n'a pas pu être levée (état réel : \(real?.rawValue ?? "illisible")) : elle reste en vigueur.")
+        end("la vie privée n'a pas pu être levée (état réel : \(real?.rawValue ?? "illisible")), elle reste en vigueur")
         if let requester {
             onClientError?(requester, .uvcFailed, cause.text)
         }
@@ -993,6 +1096,9 @@ public final class PrivacyReconciler {
     }
 
     private func finishSettle(onTarget: Bool) {
+        if onTarget {
+            note("−70° atteint, relu \(motion.position.map { Self.degrees($0.tilt) } ?? "illisible")")
+        }
         settle = nil
         step = .idle
         tiltWaited = true
@@ -1008,7 +1114,7 @@ public final class PrivacyReconciler {
             // Le débranchement est traité à part ; le branchement reprend la sortie.
             return
         } catch {
-            log("Position d'avant la vie privée refusée par la caméra : \(error). La vie privée reste en vigueur.")
+            end("position d'avant la vie privée refusée par la caméra (\(error)), la vie privée reste en vigueur")
             if let requester {
                 onClientError?(requester, .uvcFailed, "La caméra a refusé la commande (\(error)).")
             }
@@ -1027,7 +1133,15 @@ public final class PrivacyReconciler {
         }
         try camera.setPanTiltAbsolute(panDegrees: target.pan, tiltDegrees: target.tilt)
         lastTarget = PanTiltPosition(pan: target.pan, tilt: target.tilt)
+        endPrivacy()
+        end("levée, position mémorisée renvoyée (vérifiée dans \(Int(Self.settleDelay)) s)")
+        startVerification()
+    }
+
+    /// Fin de la vie privée, la caméra à sa position d'avant (renvoyée, ou reprise d'elle-même).
+    private func endPrivacy() {
         isActive = false
+        plugged = false
         saved = nil
         mayBeNative = false
         real = nil
@@ -1042,7 +1156,36 @@ public final class PrivacyReconciler {
         pendingTake = false
         persist()
         zoom.refresh()
-        startVerification()
+    }
+
+    /// Sortie rapide (spec § 6.5 bis, « Accélération ») : la caméra vient d'être lue éveillée, nacelle immobile. Position
+    /// et zoom relus (UVC), comparés à `saved` ; l'inclinaison lue par le SDK doit aussi y être, au cas où la relecture
+    /// UVC serait périmée. Vrai si rien n'est à renvoyer. Une relecture ne bouge pas la caméra.
+    private func returnedToSaved() -> Bool {
+        motion.refreshPosition()
+        let position = motion.position
+        let zoomValue = try? camera.readZoom()
+        let read = position.map { "pan \(Self.degrees($0.pan)), tilt \(Self.degrees($0.tilt))" } ?? "position illisible"
+        let readZoom = zoomValue.map { "zoom \($0)" } ?? "zoom illisible"
+        let readPitch = lastPitch.map { " (inclinaison SDK \(Self.pitchText($0)))" } ?? ""
+        guard let target = saved else {
+            note("position relue \(read), \(readZoom)\(readPitch) ; position mémorisée inconnue, 0°/0° renvoyé")
+            return false
+        }
+        var gap = Double.infinity
+        if let position {
+            gap = max(abs(position.pan - target.pan), abs(position.tilt - target.tilt))
+        }
+        if let lastPitch {
+            gap = max(gap, abs(-lastPitch - target.tilt))
+        }
+        let zoomSame = target.zoom == nil || zoomValue == target.zoom
+        let back = gap < Self.returnTolerance && zoomSame
+        let memorized = "pan \(Self.degrees(target.pan)), tilt \(Self.degrees(target.tilt)), zoom \(target.zoom.map { "\($0)" } ?? "inconnu")"
+        let verdict = back ? "rien à renvoyer" : "position mémorisée renvoyée"
+        let shownGap = gap.isFinite ? Self.degrees(gap) : "inconnu"
+        note("position relue \(read), \(readZoom)\(readPitch) ; mémorisée \(memorized) : écart \(shownGap)\(zoomSame ? "" : ", zoom différent"), \(verdict)")
+        return back
     }
 
     // MARK: - Vérification de la position (spec § 6.5)
@@ -1183,5 +1326,50 @@ public final class PrivacyReconciler {
 
     private func changed() {
         onChange?()
+    }
+
+    // MARK: - Journal (spec § 6.5 bis : une ligne par étape, lisible pour un diagnostic)
+
+    /// Une demande ou une réapplication commence : les durées suivantes partent de là.
+    private func begin(_ text: String) {
+        sequenceStart = scheduler.now
+        log("Vie privée : \(text).")
+    }
+
+    /// Une étape, avec la durée depuis le début de la séquence.
+    private func note(_ text: String) {
+        let elapsed = sequenceStart.map { " (+\(Self.seconds(scheduler.now - $0)))" } ?? ""
+        log("Vie privée : \(text)\(elapsed).")
+    }
+
+    /// La fin d'une séquence, avec sa durée totale.
+    private func end(_ text: String) {
+        guard let start = sequenceStart else {
+            log("Vie privée : \(text).")
+            return
+        }
+        sequenceStart = nil
+        log("Vie privée : \(text), en \(Self.seconds(scheduler.now - start)) au total.")
+    }
+
+    private static func name(_ order: NativeOrder) -> String {
+        switch order {
+        case .on: "privacy on"
+        case .off: "privacy off"
+        case .status: "privacy status"
+        }
+    }
+
+    private static func seconds(_ value: TimeInterval) -> String {
+        String(format: "%.2f s", value)
+    }
+
+    private static func degrees(_ value: Double) -> String {
+        String(format: "%.1f°", value)
+    }
+
+    /// L'inclinaison lue par le SDK, positive vers le bas.
+    private static func pitchText(_ pitch: Double) -> String {
+        pitch >= 0 ? "\(degrees(pitch)) vers le bas" : "\(degrees(-pitch)) vers le haut"
     }
 }

@@ -49,6 +49,8 @@ public final class AIOrderQueue: AIRunner {
 
     public var supportsNativePrivacy: Bool { runner.supportsNativePrivacy }
 
+    public var isReady: Bool { runner.isReady }
+
     public func prewarm() {
         runner.prewarm()
     }

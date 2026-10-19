@@ -136,6 +136,22 @@ struct ResidentAIRunnerTests {
         await cleanUp(runner, serve)
     }
 
+    @Test("SDK prêt seulement une fois « ready » reçu : ni avant le lancement, ni pendant, ni après une réinitialisation")
+    func readiness() async throws {
+        let serve = try FakeServe(answering)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        #expect(!runner.isReady)
+        runner.prewarm()
+        // Lancé, mais le SDK cherche encore la caméra (0,2 s dans ce script).
+        #expect(!runner.isReady)
+        #expect(await eventually { runner.isReady })
+        #expect(await order(runner) == .success)
+        #expect(runner.isReady)
+        runner.reset()
+        #expect(!runner.isReady)
+        await cleanUp(runner, serve)
+    }
+
     @Test("err 2 : erreur du SDK, puis l'utilitaire est arrêté ; l'ordre suivant tourne dans un processus neuf")
     func sdkError() async throws {
         let serve = try FakeServe("""

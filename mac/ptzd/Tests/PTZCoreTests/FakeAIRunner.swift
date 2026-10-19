@@ -8,15 +8,16 @@ import Testing
 /// - la réponse arrive quand le test le décide : réussie, en échec, en retard, ou perdue (l'ordre agit sur la caméra,
 ///   mais le vrai runner rend `timeout` faute de réponse) ; les lectures peuvent aussi répondre seules (`autoReads`) ;
 /// - les **sessions du SDK** : le vrai utilitaire repart d'une session neuve (4 s) après un `err 2` d'ordre, un
-///   `err 3`, un délai dépassé ou une réinitialisation ; une lecture ratée la garde ;
+///   `err 3`, un délai dépassé ou une réinitialisation ; une lecture ratée la garde. Le SDK n'est **prêt** (`isReady`)
+///   qu'une fois que la session a répondu à un ordre ;
 /// - un **état réel simulé** de la caméra (`state`), que les ordres de vie privée changent quand ils agissent, et que
 ///   `privacy status` lit avec le second témoin, l'inclinaison de la nacelle ;
 /// - **les mouvements propres de la caméra**, avec `attach(camera:scheduler:)` : la bascule (état 3 en 0,5 s), la
-///   descente vers 85° (1,1 s), la remontée à la position d'avant (0,5 s), l'état 1 vers 1,7 s après le réveil, et le
-///   retour éveillé et droit après une coupure d'alimentation (`powerCycle`). Sans caméra liée, la bascule est
-///   immédiate ;
-/// - **la remontée suit la course** : 0,5 s pour les 15° mesurés (85° vers 70°), proportionnellement plus pour une
-///   course plus longue (`riseSpeed`), la position changeant par paliers de `riseStep` ;
+///   descente vers 85° (1,1 s) depuis la position où l'ordre la trouve, pan et zoom inchangés, la remontée à cette
+///   même position d'entrée, l'état 1 vers 1,7 s après le réveil, et le retour éveillé et droit après une coupure
+///   d'alimentation (`powerCycle`). Sans caméra liée, la bascule est immédiate ;
+/// - **la remontée suit la course** : 0,5 s au moins (15° mesurés, 85° vers 70°), 1,1 s pour 87° (85° vers −2°, mesuré
+///   le 19/10 après le banc), à `riseSpeed`, la position changeant par paliers de `riseStep` ;
 /// - **l'invariant « un seul pilote »** : avec une caméra liée, `FakeCamera` fait échouer tout test où un ordre UVC part
 ///   pendant que la caméra gère seule sa position (mode natif, bascule, remontée), hors rebranchement.
 @MainActor
@@ -36,9 +37,8 @@ final class FakeAIRunner: AIRunner {
     static let switchTime: TimeInterval = 0.5
     static let descentTime: TimeInterval = 1.1
     static let riseTime: TimeInterval = 0.5
-    /// Vitesse de la remontée (degrés par seconde) : 15° en 0,5 s, mesuré. Une course plus longue dure plus longtemps.
-    static let riseSpeed: Double = 30
-    static let riseStep: TimeInterval = 0.25
+    /// Paliers de la remontée : assez fins pour que deux relectures serrées (0,15 s) ne tombent pas sur le même.
+    static let riseStep: TimeInterval = 0.05
     static let wakeStateTime: TimeInterval = 1.7
     /// La pose du mode natif, en degrés UVC (85° vers le bas).
     static let nativeTilt: Double = -85
@@ -54,6 +54,8 @@ final class FakeAIRunner: AIRunner {
     var pitchUnreadable = false
     /// Les lectures de l'état répondent seules, tout de suite, avec l'état simulé.
     var autoReads = false
+    /// Vitesse de la remontée (degrés par seconde) : 87° en 1,1 s, mesuré le 19/10. Un test peut la ralentir (m4).
+    var riseSpeed: Double = 80
 
     /// Ordres acceptés, dans l'ordre.
     private(set) var received: [Order] = []
@@ -66,6 +68,11 @@ final class FakeAIRunner: AIRunner {
     /// Sessions du SDK ouvertes (chacune coûte environ 4 s à la vraie caméra).
     private(set) var sessions = 0
     private var sessionOpen = false
+    /// La session ouverte a déjà répondu : le SDK a trouvé la caméra.
+    private var sessionAnswered = false
+
+    /// Le SDK est prêt, comme au vrai utilitaire après « ready » : une session ouverte, qui a déjà répondu.
+    var isReady: Bool { sessionOpen && sessionAnswered }
     private var current: (order: Order, completion: Completion)?
 
     private weak var camera: FakeCamera?
@@ -121,6 +128,12 @@ final class FakeAIRunner: AIRunner {
         beforeNative = nil
         sessionOpen = false
         camera?.position = PanTiltPosition(pan: 0, tilt: 0)
+    }
+
+    /// L'utilitaire s'est arrêté après son délai d'inactivité : la session est fermée, le SDK n'est plus prêt ; le
+    /// prochain ordre en ouvre une neuve.
+    func idleStop() {
+        sessionOpen = false
     }
 
     /// Réveil par un autre moyen (bouton, télécommande, app OBSBOT) : la caméra reprend sa position d'avant.
@@ -192,6 +205,7 @@ final class FakeAIRunner: AIRunner {
         }
         if !sessionOpen {
             sessionOpen = true
+            sessionAnswered = false
             sessions += 1
         }
         received.append(order)
@@ -208,8 +222,10 @@ final class FakeAIRunner: AIRunner {
             sessionOpen = false
         case .sdkError where pending.order != .status:
             sessionOpen = false
-        default:
+        case .launchFailed:
             break
+        default:
+            sessionAnswered = true
         }
         if effect, case let .privacy(on) = pending.order {
             move(toPrivacy: on)
@@ -260,7 +276,7 @@ final class FakeAIRunner: AIRunner {
             // Sans position notée (état posé par le test), celle où ptzd la met toujours avant le mode natif : −70°.
             let back = beforeNative ?? PanTiltPosition(pan: camera.position.pan, tilt: PrivacyReconciler.privacyTilt)
             // La remontée dure plus longtemps pour une course plus longue (m4) : la position change par paliers.
-            let duration = max(Self.riseTime, abs(back.tilt - camera.position.tilt) / Self.riseSpeed)
+            let duration = max(Self.riseTime, abs(back.tilt - camera.position.tilt) / riseSpeed)
             let start = camera.position
             risingUntil = scheduler.now + duration
             let steps = duration <= Self.riseTime + 1e-9 ? 1 : max(1, Int((duration / Self.riseStep).rounded()))

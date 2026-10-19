@@ -61,6 +61,12 @@ struct AIOrderQueueTests {
         #expect(!queue.supportsNativePrivacy)
         runner.nativePrivacyAvailable = true
         #expect(queue.supportsNativePrivacy)
+        // SDK prêt : une session ouverte, qui a déjà répondu.
+        #expect(!queue.isReady)
+        queue.run(on: false) { _ in }
+        #expect(!queue.isReady)
+        runner.answer(.tracking(false))
+        #expect(queue.isReady)
     }
 }
 
