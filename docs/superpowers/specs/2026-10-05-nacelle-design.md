@@ -142,21 +142,25 @@ Amendement du § 6.5, demandé par Djoko : la vie privée doit aussi couper le *
   - le muet et le volume d'entrée de macOS (CoreAudio) sont acceptés et relus, mais le micro les ignore : le niveau ne bouge pas (environ −31 dB) ;
   - le **mode vie privée natif de l'OBSBOT** (SDK : `cameraSetMicrophoneDuringSleepU(0)`, puis `cameraSetDevRunStatusR(DevStatusPrivacy)`) retourne l'objectif à 90°, rend une **image noire** et un **silence total** (−91 dB). Le flux continue à 25 images par seconde : go2rtc ne voit ni erreur ni relance, sur 20 minutes d'essai. L'état tient sans programme du SDK actif ;
   - le réveil (`cameraSetDevRunStatusR(DevStatusRun)`) rend l'image et le son, et la caméra reprend **d'elle-même** sa dernière position.
-- **Deux modes de vie privée**, retenus dans `state.json` (`mode` : `native` ou `tilt`) et publiés dans l'état (champ `privacyMode`, absent chez un ptzd ancien) :
-  - **`native`** : le mode de l'OBSBOT, par `obsbot-ai` (ordres `privacy on` et `privacy off`, en mode ponctuel et en mode service). Il faut le SDK installé ;
-  - **`tilt`** : le repli d'aujourd'hui, objectif incliné à −70°, sans coupure de l'image ni du micro.
-- **Entrée** :
-  1. arrêt du mouvement, prise de la main sur le suivi IA, lecture et enregistrement de la position et du zoom, comme au § 6.5 ;
-  2. avec le SDK : `privacy on`. En cas d'échec, **un second essai automatique, dans les 10 s**. S'il échoue aussi, **repli sur `tilt`**, avec un avertissement : « La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné. » ;
-  3. sans le SDK : `tilt` directement.
+- **Relecture du premier prototype (19/10, Opus)** : un ptzd qui *suppose* l'état de la caméra peut afficher « image et micro coupés » pendant que la caméra filme (ordre croisé entrée/sortie sur un utilitaire qui ne traite qu'un ordre à la fois, réponse perdue, ancien obsbot-ai pendant la recompilation, repli suivi d'un passage au natif). La mécanique ci-dessous remplace celle du prototype ; le comportement voulu ne change pas.
+- **Deux couches.** La **protection immédiate** est l'inclinaison à −70° (commande UVC directe, rapide, sans SDK). Le **mode natif** de l'OBSBOT (image noire, micro coupé) vient **par-dessus**, par `obsbot-ai`, quand le SDK est là. `state.json` retient `privacy` (voulu), `saved` (position d'avant la vie privée) et `native` (dernier état natif constaté).
+- **Un seul pilote de la position à la fois.** Pendant que la caméra est en mode natif (ou y entre, ou en sort), ptzd n'envoie **aucun** ordre de position : ni renvoi des −70°, ni vérification, ni réapplication. La caméra mémorise sa position à l'entrée en mode natif et la reprend d'elle-même au réveil : un ordre UVC pendant ces mouvements se battrait avec elle.
+- **État voulu, état constaté.** ptzd garde un seul état voulu (vie privée oui ou non). Un réconciliateur l'applique, un ordre à la fois, sur l'utilitaire résident ; un nouvel ordre de l'utilisateur pendant une étape change l'état voulu, et la séquence en cours s'arrête à la prochaine étape pour repartir vers le nouvel état (le dernier choix gagne, aucun ordre croisé). `obsbot-ai` gagne un ordre de **lecture de l'état réel** (`privacy status` : `run`, `privacy` ou `sleep`, par `cameraGetCameraStatusU`) : après chaque ordre natif, et quand une réponse manque ou échoue, ptzd relit l'état réel au lieu de supposer.
+- **Entrée** (et réapplication au démarrage, au rebranchement, après la coupure du suivi IA, si l'état voulu est « oui ») :
+  1. arrêt du mouvement, prise de la main sur le suivi IA. `saved` n'est écrit qu'à une **entrée** demandée par l'utilisateur, jamais à une réapplication, un repli ou un passage au natif ;
+  2. si l'état réel est déjà `privacy` (réapplication) : rien d'autre, la caméra est protégée ;
+  3. sinon, **inclinaison à −70°**, puis **attente que la caméra y soit** (relecture de la position, jusqu'à stabilité près de la cible, délai maximal) ;
+  4. avec le SDK : `privacy on`, puis relecture de l'état réel. Échec (ou état réel différent) : **second essai automatique, dans les 10 s**. Second échec : l'objectif reste à −70° et l'**avertissement** s'affiche : « La vie privée n'a pas pu couper l'image ni le micro de la caméra : l'objectif est seulement détourné. » La vérification et les renvois des −70° (§ 6.5) ne reprennent **qu'une fois établi** que la caméra n'est pas en mode natif.
 - **Sortie** :
-  - `native` : `privacy off`, avec un second essai dans les 10 s en cas d'échec. La caméra reprend seule sa position ; ptzd relit la position après le délai habituel. Si les deux essais échouent, la vie privée reste active et l'erreur est montrée ;
-  - `tilt` : comme au § 6.5 (zoom, puis position mémorisée).
-- **Réapplication** (démarrage de ptzd, rebranchement, fin de la coupure du suivi IA) : le mode retenu est réappliqué ; `native` suit les mêmes règles que l'entrée (second essai, puis repli sur `tilt` avec avertissement). Un mode `tilt` subi par repli retente le mode natif à la réapplication, si le SDK est là.
-- **Vérification de position** (§ 6.5, « Relecture », et renvois de l'ordre) : seulement en mode `tilt`. En mode `native`, la caméra gère elle-même sa position.
+  1. avec le SDK : `privacy off` **quel que soit le mode noté**, puis relecture jusqu'à l'état réel `run` (second essai dans les 10 s). Si la caméra reste en `privacy` ou en `sleep` après les deux essais : la vie privée reste active, avec une erreur visible ;
+  2. **attente de la fin de la remontée propre de la caméra** : relecture de la position jusqu'à ce qu'elle soit stable (délai maximal ; le délai réel est mesuré au banc) ;
+  3. seulement alors, zoom puis **position mémorisée** (`saved`, ou 0°/0° si elle est inconnue), avec la vérification et les renvois du § 6.5 ;
+  4. sans le SDK : directement l'étape 3.
+- **Utilitaire ancien ou absent.** Une réponse « ordre inconnu » (code 3) d'un obsbot-ai d'avant la V2 n'est pas un échec de la caméra : ptzd reste sur la protection à −70° et publie « mise à jour du SDK en cours ». Quand PTZBot a recompilé obsbot-ai, il le dit à ptzd, qui redémarre son utilitaire et réconcilie. Si la recompilation est impossible (outils de développement absents, échec), la note le dit, avec l'action à faire.
+- **État publié** (`privacyMode`, champ optionnel) : `native` seulement quand l'état réel `privacy` a été lu ; `tilt` sinon (protection à −70° seule), avec la raison (`noSDK`, `updating`, `failed`). L'interface dit « objectif détourné » tant que le mode natif n'est pas confirmé, puis « image et micro coupés ».
 - **Pendant** : `move`, `zoom` et le suivi IA restent refusés (`privacyActive`).
-- **Interfaces** (Mac et iOS, textes au vouvoiement, en anglais et en français) : la vie privée « coupe l'image et le micro de la caméra ». En mode `tilt`, une note visible : « Sans le SDK OBSBOT, la vie privée détourne seulement l'objectif : l'image et le micro ne sont pas coupés. » (ou l'avertissement de repli ci-dessus).
-- **Quitter PTZBot** ne réveille pas la caméra : la vie privée native tient sans l'app, et sera réappliquée au prochain lancement.
+- **Interfaces** (Mac et iOS, textes au vouvoiement ; en anglais et en français sur Mac) : les notes ci-dessus, selon la raison.
+- **Quitter PTZBot** ne réveille pas la caméra : la vie privée native tient sans l'app ; au prochain lancement, la relecture de l'état réel évite de rejouer l'inclinaison.
 
 ### 6.6 Erreurs
 
