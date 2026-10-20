@@ -52,6 +52,12 @@ private final class ReadingOutcome {
     var value: PrivacyReading?
 }
 
+/// Résultat d'une lecture du réglage d'exposition.
+@MainActor
+private final class ExposureOutcome {
+    var value: ExposureReading?
+}
+
 /// Réponse « ok » à chaque ordre, après un démarrage de 0,2 s qui laisse passer du bruit sur les deux sorties.
 private let answering = """
     echo "bruit du SDK"
@@ -784,6 +790,113 @@ struct ResidentAIRunnerTests {
         let runner = runner(serve, scheduler: scheduler)
         let outcome = ReadingOutcome()
         runner.readPrivacy { outcome.value = $0 }
+        #expect(await eventually { serve.orders.count == 1 })
+        scheduler.advance(by: 4.9)
+        #expect(outcome.value == nil)
+        scheduler.advance(by: 0.2)
+        #expect(outcome.value == .failed(.timeout))
+        await cleanUp(runner, serve)
+    }
+
+    @Test("exposure status : l'obturation et le mode se lisent tels quels ; exposure set écrit la ligne attendue (§ 6.11)")
+    func exposure() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            for reply in "31 manual" "47 auto" "ok"; do
+                read order
+                echo "$order" >> "$dir/orders"
+                echo "obsbot-ai: ok $reply"
+            done
+            while read order; do echo "obsbot-ai: ok"; done
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        var readings: [ExposureReading] = []
+        for _ in 0..<2 {
+            let outcome = ExposureOutcome()
+            runner.readExposure { outcome.value = $0 }
+            _ = await eventually { outcome.value != nil }
+            readings.append(outcome.value ?? .failed(.timeout))
+        }
+        #expect(readings == [.setting(ExposureSetting(shutter: 31, auto: false)), .setting(ExposureSetting(shutter: 47, auto: true))])
+        let applied = Outcome()
+        runner.runExposure(ExposureSetting(shutter: 31, auto: true)) { applied.value = $0 }
+        _ = await eventually { applied.value != nil }
+        #expect(applied.value == .success)
+        #expect(serve.orders == ["exposure status", "exposure status", "exposure set 31 auto"])
+        #expect(serve.starts.count == 1)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("exposure set manuel : la ligne dit manual")
+    func exposureSetManual() async throws {
+        let serve = try FakeServe(answering)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let applied = Outcome()
+        runner.runExposure(ExposureSetting(shutter: 120, auto: false)) { applied.value = $0 }
+        _ = await eventually { applied.value != nil }
+        #expect(applied.value == .success)
+        #expect(serve.orders == ["exposure set 120 manual"])
+        await cleanUp(runner, serve)
+    }
+
+    @Test("exposure status : un réglage illisible est un échec, jamais un réglage deviné ; err 3 : ordre inconnu")
+    func exposureUnreadable() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            read order
+            echo "obsbot-ai: ok"
+            read order
+            echo "obsbot-ai: ok 31 flou"
+            read order
+            echo "obsbot-ai: ok -4 auto"
+            read order
+            echo "obsbot-ai: err 3"
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        var results: [ExposureReading?] = []
+        for _ in 0..<4 {
+            let outcome = ExposureOutcome()
+            runner.readExposure { outcome.value = $0 }
+            _ = await eventually { outcome.value != nil }
+            results.append(outcome.value)
+        }
+        #expect(results == [.failed(.sdkError), .failed(.sdkError), .failed(.sdkError), .failed(.unknownOrder)])
+        await cleanUp(runner, serve)
+    }
+
+    @Test("exposure status ratée (err 2) : l'utilitaire reste, comme privacy status ; exposure set raté : session neuve")
+    func exposureFailures() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            read order
+            echo "$order" >> "$dir/orders"
+            echo "obsbot-ai: err 2"
+            read order
+            echo "$order" >> "$dir/orders"
+            echo "obsbot-ai: err 2"
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        let read = ExposureOutcome()
+        runner.readExposure { read.value = $0 }
+        _ = await eventually { read.value != nil }
+        #expect(read.value == .failed(.sdkError))
+        #expect(runner.hasHelper)
+        let applied = Outcome()
+        runner.runExposure(ExposureSetting(shutter: 31, auto: true)) { applied.value = $0 }
+        _ = await eventually { applied.value != nil }
+        #expect(applied.value == .sdkError)
+        #expect(serve.orders == ["exposure status", "exposure set 31 auto"])
+        #expect(!runner.hasHelper)
+        await cleanUp(runner, serve)
+    }
+
+    @Test("exposure status a 5 s pour répondre, comme un ordre de suivi")
+    func exposureTimeout() async throws {
+        let serve = try FakeServe(Self.silentThenAnswering)
+        let scheduler = FakeScheduler()
+        let runner = runner(serve, scheduler: scheduler)
+        let outcome = ExposureOutcome()
+        runner.readExposure { outcome.value = $0 }
         #expect(await eventually { serve.orders.count == 1 })
         scheduler.advance(by: 4.9)
         #expect(outcome.value == nil)

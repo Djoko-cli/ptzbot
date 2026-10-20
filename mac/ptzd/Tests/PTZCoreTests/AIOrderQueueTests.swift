@@ -27,6 +27,26 @@ struct AIOrderQueueTests {
         #expect(results.values == ["off success", "privacy on sdkError", "status state(PTZCore.CameraRunState.run, pitch: nil)"])
     }
 
+    @Test("L'exposition passe par la même file que la vie privée : jamais deux ordres ensemble (§ 6.11)")
+    func exposureSharesTheQueue() {
+        let queue = AIOrderQueue(runner: runner)
+        let results = QueueResults()
+        queue.readExposure { results.values.append("lu \($0)") }
+        queue.runPrivacy(on: true) { results.values.append("privacy \($0)") }
+        queue.runExposure(ExposureSetting(shutter: 31, auto: true)) { results.values.append("réglé \($0)") }
+        #expect(runner.inFlight == .exposureStatus)
+        #expect(queue.waiting == 2)
+        runner.answer(.exposureStatus)
+        #expect(runner.inFlight == .privacy(true))
+        runner.answer(.privacy(true))
+        #expect(runner.inFlight == .exposure(ExposureSetting(shutter: 31, auto: true)))
+        runner.answer(.exposure(ExposureSetting(shutter: 31, auto: true)))
+        #expect(runner.inFlight == nil)
+        #expect(runner.refused.isEmpty)
+        #expect(runner.exposure == ExposureSetting(shutter: 31, auto: true))
+        #expect(results.values == ["lu setting(PTZCore.ExposureSetting(shutter: 31, auto: false))", "privacy success", "réglé success"])
+    }
+
     @Test("Un ordre donné par un rappel part après ceux qui attendaient déjà")
     func orderFromCallbackQueuesBehind() {
         let queue = AIOrderQueue(runner: runner)

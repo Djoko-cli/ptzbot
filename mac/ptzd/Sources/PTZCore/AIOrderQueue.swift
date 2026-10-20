@@ -1,6 +1,6 @@
 import Foundation
 
-/// Les ordres de l'utilitaire, un à la fois (spec § 6.5 bis) : la coupure du suivi IA et la vie privée native partagent
+/// Les ordres de l'utilitaire, un à la fois (spec § 6.5 bis et § 6.11) : la coupure du suivi IA, la vie privée native et l'exposition partagent
 /// le même `obsbot-ai serve`, qui refuse un ordre donné pendant un autre. La file les fait partir l'un après l'autre,
 /// dans l'ordre d'arrivée : aucun n'est refusé pour cause d'ordre en cours, aucun n'est croisé.
 ///
@@ -42,6 +42,24 @@ public final class AIOrderQueue: AIRunner {
         enqueue { [runner] done in
             runner.readPrivacy { reading in
                 completion(reading)
+                done()
+            }
+        }
+    }
+
+    public func readExposure(completion: @escaping @MainActor @Sendable (ExposureReading) -> Void) {
+        enqueue { [runner] done in
+            runner.readExposure { reading in
+                completion(reading)
+                done()
+            }
+        }
+    }
+
+    public func runExposure(_ setting: ExposureSetting, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        enqueue { [runner] done in
+            runner.runExposure(setting) { result in
+                completion(result)
                 done()
             }
         }

@@ -1330,7 +1330,13 @@ public final class PrivacyReconciler {
     /// Une erreur d'écriture n'empêche pas de protéger l'image : on la journalise.
     private func persist() {
         do {
-            try store.save(PersistedState(privacy: isActive, saved: saved, native: mayBeNative))
+            // Relit d'abord le fichier : l'exposition automatique y écrit aussi (spec § 6.11), ses champs ne doivent pas
+            // être effacés.
+            var state = store.load()
+            state.privacy = isActive
+            state.saved = saved
+            state.native = mayBeNative
+            try store.save(state)
         } catch {
             log("Enregistrement de state.json impossible : \(error)")
         }
