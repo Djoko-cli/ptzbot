@@ -250,6 +250,46 @@ Durée attendue : environ 4 s, davantage quand la vidéo démarre au même momen
 - Il n'y a pas d'authentification en plus dans la v1 : le réseau Tailscale de Majid sert de frontière.
 - L'API go2rtc (port 1984) est déjà ouverte sans authentification sur le réseau local. C'est un état antérieur à ce projet, qui reste hors périmètre.
 
+### 6.11 Exposition automatique (20/10/2026)
+
+Un interrupteur « Exposition auto » dans l'app iOS, à côté du bouton d'enregistrement, et dans le panneau du Mac. Conception validée par Djoko le 20/10, après un essai sur la vraie caméra.
+
+- **Essai du 20/10**, par le SDK, sans ptzd :
+  - pour la Tiny 2, seules `cameraGetExposureAbsolute(int32_t &shutter_time, bool &auto_enabled)` et `cameraSetExposureAbsolute(int32_t shutter_time, bool auto_enabled)` s'appliquent ; les autres fonctions d'exposition du SDK (`cameraSetExposureModeR`, `cameraSetFaceAER`, `cameraSetAELockR`, `cameraSetPAEEvBiasR`) sont réservées à la Tail Air ;
+  - départ : manuel, obturation 31, luminosité de l'image 80,4/255 ;
+  - `cameraSetExposureAbsolute(31, true)` : l'image s'éclaircit progressivement, jusqu'à 91,7 en 10 s ;
+  - `cameraSetExposureAbsolute(31, false)` : un creux d'une seconde, puis 81,0. **Le gain fixé dans OBSBOT Center est conservé par la caméra** : le retour au réglage manuel se fait en remettant l'obturation et le mode lus avant.
+- **Comportement.**
+  - **Activé** : la caméra passe en exposition automatique continue.
+  - **Désactivé** : retour **exact** au réglage lu juste avant l'activation (l'« ancien » réglage : obturation et mode). À la désactivation, ptzd **ne relit pas** OBSBOT Center : si le réglage a été changé là-bas entre-temps, l'ancien est quand même remis, et une ligne du journal le dit.
+  - **Tout passe par l'utilitaire du SDK** (`obsbot-ai`, toujours chargé depuis la 1.1.1, § 6.9), un ordre à la fois, par la **même file** que la vie privée et le suivi IA : les ordres ne se croisent jamais. Pas de commande UVC : l'exposition de la Tiny 2 se règle par le SDK.
+  - **Pendant la vie privée**, l'interrupteur reste utilisable et l'ordre part normalement.
+- **`obsbot-ai`** : deux ordres, avec les conventions de la vie privée.
+  - `exposure status` lit le réglage : `obsbot-ai: ok 31 manual` (obturation, puis `auto` ou `manual`). Lecture refusée par le SDK : `err 2`. Comme `privacy status`, une lecture ratée ne rend pas la session douteuse : l'utilitaire reste.
+  - `exposure set <obturation> <auto|manual>` applique le réglage : `ok`, ou `err 2` (l'utilitaire repart alors d'une session neuve, comme pour tout ordre raté). En mode `auto`, l'obturation envoyée est celle d'origine : la caméra l'ignore tant qu'elle reste automatique.
+  - `err 3` (« ordre inconnu ») : obsbot-ai d'avant l'exposition ; même traitement que pour la vie privée (raison `updating`).
+  - Mode à un coup : `obsbot-ai exposure-status` (écrit `31 manual`) et `obsbot-ai exposure-set 31 auto`. Les mêmes codes de sortie (0, 1, 2, 3).
+- **`ptzd`.**
+  - **Message client** `autoExposure(on:)`, accepté d'un client authentifié, caméra présente. Rend `cameraAbsent` sans caméra, et `uvcFailed` (texte `ExposureFailureText`) sans SDK, ou si l'utilitaire n'est pas à jour.
+  - **Activation** : lecture du réglage en place (`exposure status`), qui devient le **réglage d'origine** ; il est écrit dans `state.json` **avant** de passer en automatique (`exposure set <obturation d'origine> auto`). Ainsi un arrêt de ptzd au milieu ne perd jamais l'origine. Si le réglage d'origine est déjà automatique (réglé dans OBSBOT Center), il est retenu tel quel et remis tel quel à la désactivation : la caméra ne change pas, et le journal le dit.
+  - **Désactivation** : `exposure set <obturation d'origine> <mode d'origine>`, puis l'origine est effacée.
+  - **Réglage d'origine illisible** à l'activation (lecture refusée, délai dépassé) : l'activation est **abandonnée**, rien n'a changé sur la caméra, le client reçoit `uvcFailed`. On ne passe jamais en automatique sans pouvoir revenir.
+  - **Réglage d'origine inconnu** à la désactivation (`state.json` avec l'exposition automatique voulue mais sans origine, par exemple un fichier abîmé) : ptzd lit l'obturation en place et la remet en **manuel** ; une ligne du journal le dit.
+  - **Échec de l'ordre** (après une lecture réussie) : à l'activation, l'état revient à « désactivé », l'origine est effacée, le client reçoit `uvcFailed` ; à la désactivation, l'état reste « activé » (la caméra est restée en automatique), l'origine est gardée, le client reçoit `uvcFailed`, et un nouvel ordre retente.
+  - **Plusieurs demandes de suite** : l'état voulu change tout de suite, la séquence en cours finit son étape, puis repart vers le dernier choix (comme la vie privée, § 6.5 bis). Une réponse donnée à une session de l'utilitaire qui n'existe plus (branchement, mise à jour) est écartée.
+  - **Réapplication** quand l'exposition automatique est voulue : au **démarrage** de ptzd (caméra présente), à chaque **branchement** de la caméra (elle a pu oublier le mode automatique, ou revenir à son réglage propre) et après `aiUpdated`. L'origine n'est pas relue : elle reste celle de l'activation. Un échec de réapplication est journalisé, l'état voulu reste « activé », et la réapplication suivante réessaie. Sans SDK, rien n'est tenté : l'état voulu est gardé, et appliqué dès qu'un SDK arrive (`aiUpdated`).
+  - **`state.json`** gagne `autoExposure` (voulu) et `exposureOrigin` (`shutter`, `auto`), écrits seulement s'ils servent ; un fichier d'une version sans ces champs se lit « désactivé », sans origine. Les deux réconciliateurs (vie privée, exposition) réécrivent le fichier en relisant d'abord l'autre moitié, pour ne jamais effacer ses champs.
+  - **Journal** : une ligne par étape, préfixée « Exposition auto : » (demande, origine lue, ordre envoyé, résultat, réapplication, abandon).
+- **État publié** : `autoExposure`, champ optionnel du `state` (`on`, `off`, `unavailable`). `unavailable` quand ptzd ne peut pas tenir l'ordre : pas d'`obsbot-ai`, ou `obsbot-ai` d'avant l'exposition. Un ptzd d'avant ce champ ne l'envoie pas : l'app le lit `nil` et grise l'interrupteur. Une valeur inconnue (un futur ptzd) se lit `nil` aussi. L'état publié suit l'état **voulu** dès la demande (pas d'attente de la caméra) et revient en arrière si l'ordre échoue.
+- **Protocole** (`NacelleProtocol`) : message `{"type":"autoExposure","on":true}` ; compatible dans les deux sens (un ptzd ancien le refuse en `badMessage`, un état sans le champ se lit `nil`).
+- **Interfaces.**
+  - **iOS** : un bouton **de la même famille que celui de l'enregistrement** (même forme, même taille, même style d'état actif et inactif), juste à côté ; icône SF Symbol `sun.max` (pleine quand activé), libellé VoiceOver « Exposition auto », valeur « activée » ou « désactivée », et indication quand il est grisé. Grisé sans SDK, sans connexion ou sans caméra ; utilisable pendant la vie privée.
+  - **Mac** : un interrupteur dans le panneau, au vouvoiement, **avec la même icône SF Symbol que sur iOS** pour que la fonction se reconnaisse d'une app à l'autre ; traduit en anglais (catalogue). Grisé sans SDK, avec une note qui le dit (« Il faut le SDK OBSBOT. »).
+- **Limites assumées.**
+  - L'exposition automatique ne vaut que pour la Tiny 2 : les fonctions du SDK utilisées sont celles qui s'appliquent à elle.
+  - Un ordre d'exposition d'une réapplication, donné à une session neuve (environ 4 s), précède dans la file un ordre de vie privée donné pendant ce temps : la protection par l'inclinaison joue son rôle d'abord (§ 6.5 bis).
+  - Le gain n'est ni lu ni écrit : la caméra le garde d'elle-même (essai du 20/10).
+
 ## 7. L'app iOS (`Nacelle`)
 
 ### 7.1 Socle
