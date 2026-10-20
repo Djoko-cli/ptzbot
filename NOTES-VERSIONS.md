@@ -12,15 +12,17 @@ version GitHub et à la fenêtre de mise à jour.
 
 - **Auto exposure.** A new **Auto exposure** switch in the PTZBot panel on the Mac, and a new button next to the record button in the iPhone app (same sun icon on both). Turned on, the camera adjusts its exposure by itself, continuously. Turned off, PTZBot puts back exactly the setting (shutter and mode) it read just before turning it on, without reading OBSBOT Center again: if you changed the setting there in the meantime, the earlier one comes back anyway. The gain set in OBSBOT Center is kept by the camera.
 - PTZBot remembers your choice and that original setting, and applies it again when it starts, when the camera is plugged in again (the camera may have forgotten it) and after an update of the OBSBOT helper. If the camera's current setting cannot be read, auto exposure is not turned on and nothing changes.
-- It goes through the OBSBOT SDK: without it, the switch is greyed out, with a note. It stays usable while privacy mode is on.
+- It goes through the OBSBOT SDK: without it, the switch is greyed out, with a note. It stays usable while privacy mode is on: your choice is kept and shown at once, but nothing is sent to the camera until privacy mode ends, so a sleeping camera is never woken.
 - For the iPhone app to show the button, update PTZBot on the Mac first: with an older PTZBot, the button stays greyed out.
+- Before going back to 1.1.x, turn auto exposure off: an older PTZBot does not know the setting to put back, and the camera would stay in auto exposure.
 
 **Français**
 
 - **Exposition automatique.** Un nouvel interrupteur **Exposition auto** dans le panneau de PTZBot sur le Mac, et un nouveau bouton à côté du bouton d'enregistrement dans l'app iPhone (la même icône de soleil des deux côtés). Activé, la caméra règle seule son exposition, en continu. Désactivé, PTZBot remet exactement le réglage (obturation et mode) qu'il a lu juste avant l'activation, sans relire OBSBOT Center : si vous avez changé le réglage là-bas entre-temps, l'ancien revient quand même. Le gain réglé dans OBSBOT Center est conservé par la caméra.
 - PTZBot retient votre choix et ce réglage d'origine, et les réapplique à son démarrage, quand la caméra est rebranchée (elle a pu l'oublier) et après une mise à jour de l'utilitaire OBSBOT. Si le réglage actuel de la caméra ne peut pas être lu, l'exposition automatique n'est pas activée et rien ne change.
-- Elle passe par le SDK OBSBOT : sans lui, l'interrupteur est grisé, avec une note. Il reste utilisable pendant la vie privée.
+- Elle passe par le SDK OBSBOT : sans lui, l'interrupteur est grisé, avec une note. Il reste utilisable pendant la vie privée : votre choix est retenu et affiché tout de suite, mais rien n'est envoyé à la caméra avant la fin de la vie privée, pour ne jamais réveiller une caméra endormie.
 - Pour que l'app iPhone affiche le bouton, mettez d'abord PTZBot à jour sur le Mac : avec un PTZBot plus ancien, le bouton reste grisé.
+- Avant de revenir à une 1.1.x, désactivez l'exposition auto : un PTZBot plus ancien ne connaît pas le réglage à remettre, et la caméra resterait en exposition automatique.
 
 ## 1.1.1
 

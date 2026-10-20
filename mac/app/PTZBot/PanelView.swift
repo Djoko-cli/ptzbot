@@ -282,7 +282,8 @@ struct PanelView: View {
                 }
             }
             Divider()
-            // Exposition automatique (spec § 6.11) : utilisable pendant la vie privée, grisée sans SDK.
+            // Exposition automatique (spec § 6.11) : utilisable pendant la vie privée (le choix est retenu, l'ordre part à sa
+            // sortie), grisée sans SDK.
             PanelRow(icon: Labels.exposureIcon, title: AppText.text("Exposition auto")) {
                 Toggle(AppText.text("Exposition auto"), isOn: Binding(get: { model.state?.autoExposure == .on }, set: { model.setAutoExposure($0) }))
                     .labelsHidden()
