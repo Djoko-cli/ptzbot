@@ -839,7 +839,7 @@ struct ResidentAIRunnerTests {
         await cleanUp(runner, serve)
     }
 
-    @Test("exposure status : un réglage illisible est un échec, jamais un réglage deviné ; err 3 : ordre inconnu")
+    @Test("exposure status : un réglage illisible ou hors bornes est un échec, jamais un réglage deviné ; err 3 : ordre inconnu")
     func exposureUnreadable() async throws {
         let serve = try FakeServe("""
             echo "obsbot-ai: ready"
@@ -850,17 +850,27 @@ struct ResidentAIRunnerTests {
             read order
             echo "obsbot-ai: ok -4 auto"
             read order
+            echo "obsbot-ai: ok 1234567890 manual"
+            read order
+            echo "obsbot-ai: ok +5 auto"
+            read order
+            echo "obsbot-ai: ok 999999999 auto"
+            read order
             echo "obsbot-ai: err 3"
             """)
         let runner = runner(serve, scheduler: DispatchScheduler())
         var results: [ExposureReading?] = []
-        for _ in 0..<4 {
+        for _ in 0..<7 {
             let outcome = ExposureOutcome()
             runner.readExposure { outcome.value = $0 }
             _ = await eventually { outcome.value != nil }
             results.append(outcome.value)
         }
-        #expect(results == [.failed(.sdkError), .failed(.sdkError), .failed(.sdkError), .failed(.unknownOrder)])
+        // Mêmes bornes qu'obsbot-ai : 9 chiffres au plus, sans signe (M4) ; 999999999 passe, 1234567890 et +5 non.
+        #expect(results == [
+            .failed(.sdkError), .failed(.sdkError), .failed(.sdkError), .failed(.sdkError), .failed(.sdkError),
+            .setting(ExposureSetting(shutter: 999_999_999, auto: true)), .failed(.unknownOrder),
+        ])
         await cleanUp(runner, serve)
     }
 

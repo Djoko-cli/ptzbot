@@ -47,6 +47,69 @@ struct AIOrderQueueTests {
         #expect(results.values == ["lu setting(PTZCore.ExposureSetting(shutter: 31, auto: false))", "privacy success", "réglé success"])
     }
 
+    @Test("I1 : la vie privée passe devant l'exposition en attente, même donnée après ; un ordre parti n'est pas interrompu")
+    func privacyOvertakesQueuedExposure() {
+        let queue = AIOrderQueue(runner: runner)
+        let results = QueueResults()
+        queue.readExposure { results.values.append("lu \($0)") }
+        queue.runExposure(ExposureSetting(shutter: 31, auto: true)) { results.values.append("réglé \($0)") }
+        queue.run(on: false) { results.values.append("suivi \($0)") }
+        queue.runPrivacy(on: true) { results.values.append("privacy \($0)") }
+        queue.readPrivacy { results.values.append("état \($0)") }
+        // La lecture d'exposition était la première : elle est partie, rien ne l'interrompt.
+        #expect(runner.inFlight == .exposureStatus)
+        runner.answer(.exposureStatus)
+        // Ensuite : le suivi et la vie privée, dans l'ordre d'arrivée, devant l'exposition donnée avant eux.
+        #expect(runner.inFlight == .tracking(false))
+        runner.answer(.tracking(false))
+        #expect(runner.inFlight == .privacy(true))
+        runner.answer(.privacy(true))
+        #expect(runner.inFlight == .status)
+        runner.answer(.status)
+        #expect(runner.inFlight == .exposure(ExposureSetting(shutter: 31, auto: true)))
+        runner.answer(.exposure(ExposureSetting(shutter: 31, auto: true)))
+        #expect(runner.inFlight == nil)
+        #expect(runner.refused.isEmpty)
+        #expect(results.values.count == 5)
+    }
+
+    @Test("I1 : prêt tant qu'aucun ordre d'exposition n'est parti ; faux pendant, pour que la vie privée prenne le repli")
+    func notReadyDuringExposureOrder() {
+        runner.nativePrivacyAvailable = true
+        let queue = AIOrderQueue(runner: runner)
+        queue.run(on: false) { _ in }
+        runner.answer(.tracking(false))
+        #expect(queue.isReady)
+        #expect(!queue.busyWithExposure)
+        queue.readExposure { _ in }
+        #expect(runner.inFlight == .exposureStatus)
+        #expect(!queue.isReady)
+        #expect(queue.busyWithExposure)
+        runner.answer(.exposureStatus)
+        #expect(queue.isReady)
+        #expect(!queue.busyWithExposure)
+        // Un ordre de vie privée en cours : prêt reste faux comme avant (l'utilitaire est occupé), mais ce n'est pas l'exposition.
+        queue.runPrivacy(on: true) { _ in }
+        #expect(!queue.busyWithExposure)
+    }
+
+    @Test("Les ordres d'exposition en attente sont jetés à l'abandon de la session ; celui qui est parti va à son terme")
+    func dropQueuedExposure() {
+        let queue = AIOrderQueue(runner: runner)
+        let results = QueueResults()
+        queue.readExposure { _ in results.values.append("lu") }
+        queue.runExposure(ExposureSetting(shutter: 31, auto: true)) { _ in results.values.append("réglé") }
+        queue.runPrivacy(on: true) { _ in results.values.append("privacy") }
+        queue.dropQueuedExposure()
+        #expect(queue.waiting == 1)
+        runner.answer(.exposureStatus)
+        #expect(runner.inFlight == .privacy(true))
+        runner.answer(.privacy(true))
+        #expect(runner.inFlight == nil)
+        #expect(runner.exposureOrders.isEmpty)
+        #expect(results.values == ["lu", "privacy"])
+    }
+
     @Test("Un ordre donné par un rappel part après ceux qui attendaient déjà")
     func orderFromCallbackQueuesBehind() {
         let queue = AIOrderQueue(runner: runner)

@@ -103,6 +103,9 @@ public protocol AIRunner: AnyObject {
     /// Le SDK est prêt : l'utilitaire tourne et sa session a trouvé la caméra (« ready »). Un ordre part alors en
     /// quelques millisecondes ; sinon il attend une session neuve, environ 4 s (spec § 6.5 bis, « Accélération »).
     var isReady: Bool { get }
+    /// Un ordre d'exposition est en cours (file des ordres, spec § 6.11) : la vie privée passerait derrière lui, `isReady`
+    /// est faux et l'entrée prend le repli.
+    var busyWithExposure: Bool { get }
     /// L'utilitaire reste chargé tant que ptzd tourne (ptzd lancé avec le SDK, spec § 6.9) : il n'est plus arrêté pour
     /// inactivité, et ptzd le prépare dès le démarrage, au branchement de la caméra et après une mise à jour.
     var keepsWarm: Bool { get }
@@ -130,5 +133,6 @@ extension AIRunner {
     }
     public var supportsNativePrivacy: Bool { false }
     public var isReady: Bool { false }
+    public var busyWithExposure: Bool { false }
     public var keepsWarm: Bool { false }
 }

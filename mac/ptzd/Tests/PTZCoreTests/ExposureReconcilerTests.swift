@@ -291,7 +291,7 @@ struct ExposureReconcilerTests {
         #expect(reconciler.published == .unavailable)
         #expect(store.state.autoExposure)
         runner.nativePrivacyAvailable = true
-        reconciler.utilityUpdated()
+        reconciler.utilityUpdated(cameraPresent: true)
         #expect(reconciler.published == .on)
         #expect(runner.inFlight == .exposure(Self.auto31))
     }
@@ -326,7 +326,7 @@ struct ExposureReconcilerTests {
         #expect(reconciler.published == .unavailable)
         #expect(errors.values.map(\.2) == [ExposureFailureText.needsUpdate])
         #expect(reconciler.request(on: true, from: 7)?.message == ExposureFailureText.needsUpdate)
-        reconciler.utilityUpdated()
+        reconciler.utilityUpdated(cameraPresent: true)
         #expect(reconciler.published == .off)
         #expect(reconciler.request(on: true, from: 7) == nil)
         #expect(runner.inFlight == .exposureStatus)
@@ -352,6 +352,155 @@ struct ExposureReconcilerTests {
         runner.answer(.exposure(Self.manual31))
         #expect(runner.exposure == Self.manual31)
         #expect(store.state.exposureOrigin == nil)
+    }
+
+    // MARK: - Vie privée voulue (C1)
+
+    @Test("C1 : vie privée voulue, aucun ordre ; le choix est retenu et publié, l'ordre part à la sortie (état run lu)")
+    func noOrderWhilePrivacyWanted() {
+        var allowed = false
+        let reconciler = makeReconciler()
+        reconciler.canOrder = { allowed }
+        #expect(reconciler.request(on: true, from: 1) == nil)
+        #expect(reconciler.published == .on)
+        #expect(runner.received.isEmpty)
+        // Réapplications automatiques (branchement, démarrage) : rien non plus.
+        reconciler.reapply(reason: "caméra branchée")
+        reconciler.utilityUpdated(cameraPresent: true)
+        #expect(runner.received.isEmpty)
+        #expect(reconciler.published == .on)
+        // Sortie de la vie privée : la lecture part, puis le passage en automatique.
+        allowed = true
+        reconciler.privacyEnded()
+        #expect(runner.inFlight == .exposureStatus)
+        runner.answer(.exposureStatus)
+        #expect(runner.inFlight == .exposure(Self.auto31))
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposure == Self.auto31)
+        #expect(store.state.exposureOrigin == Self.manual31)
+        #expect(errors.values.isEmpty)
+    }
+
+    @Test("C1 : la désactivation demandée pendant la vie privée attend elle aussi la sortie, puis remet l'origine")
+    func restoreWaitsForPrivacyExit() {
+        var allowed = true
+        let reconciler = makeReconciler()
+        reconciler.canOrder = { allowed }
+        activate(reconciler)
+        allowed = false
+        #expect(reconciler.request(on: false, from: 1) == nil)
+        #expect(reconciler.published == .off)
+        #expect(runner.inFlight == nil)
+        // L'origine est retenue : le retour reste à faire, même si ptzd redémarre.
+        #expect(store.state.exposureOrigin == Self.manual31)
+        #expect(!store.state.autoExposure)
+        allowed = true
+        reconciler.privacyEnded()
+        #expect(runner.inFlight == .exposure(Self.manual31))
+        runner.answer(.exposure(Self.manual31))
+        #expect(runner.exposure == Self.manual31)
+        #expect(store.state.exposureOrigin == nil)
+    }
+
+    @Test("C1 : la caméra a pu reprendre son réglage en se réveillant, l'automatique est réappliqué à la sortie sans relire l'origine")
+    func reappliedAfterWake() {
+        let reconciler = makeReconciler()
+        activate(reconciler)
+        runner.exposure = Self.manual31
+        reconciler.privacyEnded()
+        #expect(runner.inFlight == .exposure(Self.auto31))
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposureReads == 1)
+        #expect(runner.exposure == Self.auto31)
+    }
+
+    @Test("C1 : la vie privée devient voulue pendant la lecture du réglage : le passage en automatique n'est pas envoyé")
+    func privacyWantedDuringRead() {
+        var allowed = true
+        let reconciler = makeReconciler()
+        reconciler.canOrder = { allowed }
+        _ = reconciler.request(on: true, from: 1)
+        #expect(runner.inFlight == .exposureStatus)
+        allowed = false
+        runner.answer(.exposureStatus)
+        #expect(runner.inFlight == nil)
+        #expect(runner.exposureOrders.isEmpty)
+        #expect(store.state.exposureOrigin == nil)
+        allowed = true
+        reconciler.privacyEnded()
+        runner.answer(.exposureStatus)
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposure == Self.auto31)
+    }
+
+    @Test("Les ordres d'exposition en file sont jetés quand la session est abandonnée")
+    func abandonDiscardsQueuedOrders() {
+        let reconciler = makeReconciler()
+        var discards = 0
+        reconciler.discardQueuedOrders = { discards += 1 }
+        reconciler.abandonSession()
+        #expect(discards == 1)
+    }
+
+    // MARK: - Mineurs de la relecture
+
+    @Test("I2 : aiUpdated caméra absente fait retomber « en cours de mise à jour » ; la réapplication a lieu au branchement")
+    func updatedWithoutCamera() {
+        store.state = PersistedState(privacy: false, saved: nil, autoExposure: true, exposureOrigin: Self.manual31)
+        let reconciler = makeReconciler()
+        reconciler.reapply(reason: "démarrage")
+        runner.answer(.exposure(Self.auto31), .unknownOrder)
+        #expect(reconciler.published == .unavailable)
+        reconciler.utilityUpdated(cameraPresent: false)
+        #expect(reconciler.published == .on)
+        #expect(runner.inFlight == nil)
+        reconciler.reapply(reason: "caméra branchée")
+        #expect(runner.inFlight == .exposure(Self.auto31))
+    }
+
+    @Test("M1 : un demandeur resté après une séquence sans ordre n'est pas prévenu d'un échec plus tardif")
+    func staleRequesterForgotten() {
+        let reconciler = makeReconciler()
+        _ = reconciler.request(on: true, from: 1)
+        // Même choix pendant la séquence en cours : le demandeur change, mais la séquence ne le reprendra pas.
+        _ = reconciler.request(on: true, from: 2)
+        runner.answer(.exposureStatus)
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.inFlight == nil)
+        // Plus tard, une réapplication échoue : personne n'a rien demandé, le choix voulu reste, aucune erreur.
+        reconciler.privacyEnded()
+        runner.answer(.exposure(Self.auto31), .sdkError)
+        #expect(errors.values.isEmpty)
+        #expect(reconciler.published == .on)
+        #expect(store.state.autoExposure)
+    }
+
+    @Test("M2 : « voulu » n'est écrit dans state.json qu'avec l'origine lue, jamais avant")
+    func wantedWrittenWithOrigin() {
+        let reconciler = makeReconciler()
+        _ = reconciler.request(on: true, from: 1)
+        #expect(reconciler.published == .on)
+        #expect(runner.inFlight == .exposureStatus)
+        #expect(!store.state.autoExposure)
+        #expect(store.state.exposureOrigin == nil)
+        runner.answer(.exposureStatus)
+        #expect(store.state.autoExposure)
+        #expect(store.state.exposureOrigin == Self.manual31)
+    }
+
+    @Test("M3 : désactivation demandée pendant la lecture : le passage en automatique n'est pas envoyé, rien n'est écrit")
+    func deactivationDuringRead() {
+        let reconciler = makeReconciler()
+        _ = reconciler.request(on: true, from: 1)
+        _ = reconciler.request(on: false, from: 1)
+        #expect(reconciler.published == .off)
+        runner.answer(.exposureStatus)
+        #expect(runner.inFlight == nil)
+        #expect(runner.exposureOrders.isEmpty)
+        #expect(runner.exposure == Self.manual31)
+        #expect(!store.state.autoExposure)
+        #expect(store.state.exposureOrigin == nil)
+        #expect(errors.values.isEmpty)
     }
 
     @Test("Une erreur d'écriture de state.json est journalisée et n'empêche pas de régler la caméra")

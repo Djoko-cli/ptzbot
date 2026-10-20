@@ -182,7 +182,9 @@ public final class ResidentAIRunner: AIRunner {
         submit(.exposureStatus) { [weak self] reply in
             switch reply {
             case let .ok(words):
-                if words.count == 2, let shutter = Int(words[0]), shutter >= 0, words[1] == "auto" || words[1] == "manual" {
+                // Mêmes bornes qu'obsbot-ai (`exposure set`) : 9 chiffres au plus, sans signe. Une obturation que l'ordre
+                // refuserait n'est pas un réglage qu'on saurait remettre.
+                if words.count == 2, Self.isShutter(words[0]), let shutter = Int(words[0]), words[1] == "auto" || words[1] == "manual" {
                     completion(.setting(ExposureSetting(shutter: shutter, auto: words[1] == "auto")))
                 } else {
                     self?.log("obsbot-ai : réglage d'exposition illisible (« \(words.joined(separator: " ")) »).")
@@ -192,6 +194,11 @@ public final class ResidentAIRunner: AIRunner {
                 completion(.failed(result))
             }
         }
+    }
+
+    /// Une obturation lisible et remettable : 1 à 9 chiffres, comme `exposure set` d'obsbot-ai.
+    private static func isShutter(_ text: Substring) -> Bool {
+        (1...9).contains(text.count) && text.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
     public func runExposure(_ setting: ExposureSetting, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
