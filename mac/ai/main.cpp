@@ -142,8 +142,13 @@ static Order parseOrder(const std::string &text) {
     return Order::Unknown;
 }
 
-// Les arguments de `exposure set` : une obturation entière positive ou nulle, puis `auto` ou `manual`. Autre chose :
-// ordre inconnu (code 3), jamais un réglage deviné.
+// Bornes de l'obturation, les mêmes des deux côtés (obsbot-ai et ptzd) : entière, de 0 à 999999999 (9 chiffres, sans
+// signe). Une valeur lue hors de ces bornes est une erreur de lecture : ptzd ne saurait pas la remettre, et un `exposure
+// set` bien formé ne doit jamais être refusé par « ordre inconnu » (code 3), que ptzd lirait « obsbot-ai pas à jour ».
+static const int32_t kMaxShutter = 999999999;
+
+// Les arguments de `exposure set` : une obturation entière positive ou nulle (9 chiffres au plus), puis `auto` ou `manual`.
+// Autre chose : ordre inconnu (code 3), jamais un réglage deviné.
 static bool parseExposureArguments(const std::string &shutter, const std::string &mode, Command *command) {
     if (shutter.empty() || shutter.size() > 9 || shutter.find_first_not_of("0123456789") != std::string::npos) {
         return false;
@@ -206,6 +211,10 @@ static int32_t readExposure(const std::shared_ptr<Device> &tiny2, Reading *readi
     if (result != RM_RET_OK) {
         std::fprintf(stderr, "obsbot-ai : lecture de l'exposition refusée (%d)\n", result);
         return result;
+    }
+    if (shutter < 0 || shutter > kMaxShutter) {
+        std::fprintf(stderr, "obsbot-ai : obturation lue hors des bornes (%d)\n", shutter);
+        return RM_RET_ERR;
     }
     reading->hasExposure = true;
     reading->shutter = shutter;
