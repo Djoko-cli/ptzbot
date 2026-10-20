@@ -114,6 +114,35 @@ struct LocalizationTests {
         #expect(english.allSatisfy { $0.hasPrefix("AI tracking unchanged: ") })
     }
 
+    @Test("Exposition automatique : les messages d'échec de ptzd (partagés) sont traduits, jamais repris tels quels (spec § 6.11)")
+    func exposureTexts() {
+        let cases: [(String, String)] = [
+            (ExposureFailureText.noSDK, "Auto exposure needs the OBSBOT SDK."),
+            (ExposureFailureText.needsUpdate, "Auto exposure is unavailable: obsbot-ai is out of date."),
+            (ExposureFailureText.readFailed, "Auto exposure was not turned on: the camera's current setting cannot be read."),
+            (ExposureFailureText.activateFailed, "Auto exposure could not be turned on."),
+            (ExposureFailureText.deactivateFailed, "Auto exposure could not be turned off: the camera stayed in automatic."),
+        ]
+        for (message, english) in cases {
+            #expect(inLanguage("fr") { ErrorTexts.text(for: .uvcFailed, message: message) } == message)
+            #expect(inLanguage("en") { ErrorTexts.text(for: .uvcFailed, message: message) } == english)
+        }
+        // La note sous l'interrupteur, et quand il est utilisable.
+        #expect(inLanguage("fr") { Labels.exposureNote(.on, needsSDK: true) } == "SDK OBSBOT requis")
+        #expect(inLanguage("en") { Labels.exposureNote(.on, needsSDK: true) } == "OBSBOT SDK required")
+        #expect(inLanguage("fr") { Labels.exposureNote(.unavailable, needsSDK: false) } == "Indisponible : obsbot-ai est en cours de mise à jour.")
+        #expect(inLanguage("en") { Labels.exposureNote(.unavailable, needsSDK: false) } == "Unavailable: obsbot-ai is being updated.")
+        #expect(Labels.exposureNote(.off, needsSDK: false) == nil)
+        #expect(Labels.exposureNote(nil, needsSDK: false) == nil)
+        #expect(Labels.exposureEnabled(.on, needsSDK: false))
+        #expect(Labels.exposureEnabled(.off, needsSDK: false))
+        #expect(!Labels.exposureEnabled(.off, needsSDK: true))
+        #expect(!Labels.exposureEnabled(.unavailable, needsSDK: false))
+        // Un ptzd d'avant l'exposition automatique ne publie rien : l'interrupteur est grisé.
+        #expect(!Labels.exposureEnabled(nil, needsSDK: false))
+        #expect(Labels.exposureIcon == "sun.max")
+    }
+
     @Test("Vie privée native : sous-titre selon l'état réel, notes selon la raison de ptzd, messages d'échec, en français et en anglais")
     func privacyTexts() {
         // Sous-titre : ce qui tient en vie privée (natif constaté seulement), ce qu'elle fera sinon (SDK prêt seulement).

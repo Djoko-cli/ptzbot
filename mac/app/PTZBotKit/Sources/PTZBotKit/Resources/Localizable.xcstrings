@@ -2024,6 +2024,108 @@
         }
       }
     },
+    "L'exposition automatique demande le SDK OBSBOT.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto exposure needs the OBSBOT SDK."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'exposition automatique demande le SDK OBSBOT."
+          }
+        }
+      }
+    },
+    "L'exposition automatique n'est pas disponible : obsbot-ai n'est pas à jour.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto exposure is unavailable: obsbot-ai is out of date."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'exposition automatique n'est pas disponible : obsbot-ai n'est pas à jour."
+          }
+        }
+      }
+    },
+    "L'exposition automatique n'a pas été activée : le réglage de la caméra ne se lit pas.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto exposure was not turned on: the camera's current setting cannot be read."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'exposition automatique n'a pas été activée : le réglage de la caméra ne se lit pas."
+          }
+        }
+      }
+    },
+    "L'exposition automatique n'a pas pu être activée.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto exposure could not be turned on."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'exposition automatique n'a pas pu être activée."
+          }
+        }
+      }
+    },
+    "L'exposition automatique n'a pas pu être désactivée : la caméra est restée en automatique.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto exposure could not be turned off: the camera stayed in automatic."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'exposition automatique n'a pas pu être désactivée : la caméra est restée en automatique."
+          }
+        }
+      }
+    },
+    "Indisponible : obsbot-ai est en cours de mise à jour.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable: obsbot-ai is being updated."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indisponible : obsbot-ai est en cours de mise à jour."
+          }
+        }
+      }
+    },
     "Tailscale": {
       "extractionState": "manual",
       "localizations": {

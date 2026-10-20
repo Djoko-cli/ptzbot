@@ -91,11 +91,13 @@ struct PanelModelTests {
         try connect(devices: [device])
         model.setPrivacy(true)
         model.setAITracking(true)
+        model.setAutoExposure(true)
+        model.setAutoExposure(false)
         model.kick(device.deviceID)
         model.unblock(device.deviceID)
         model.revoke(device.deviceID)
         #expect(Array(sent.dropFirst()) == [
-            .privacy(on: true), .aiTracking(on: true), .kick(deviceID: device.deviceID),
+            .privacy(on: true), .aiTracking(on: true), .autoExposure(on: true), .autoExposure(on: false), .kick(deviceID: device.deviceID),
             .unblock(deviceID: device.deviceID), .revoke(deviceID: device.deviceID),
         ])
     }

@@ -72,6 +72,11 @@ public final class PanelModel {
         send(.aiTracking(on: on))
     }
 
+    /// Exposition automatique de la caméra (spec § 6.11) ; désactivée, la caméra revient au réglage d'avant.
+    public func setAutoExposure(_ on: Bool) {
+        send(.autoExposure(on: on))
+    }
+
     public func kick(_ deviceID: String) {
         send(.kick(deviceID: deviceID))
     }
