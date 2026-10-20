@@ -12,12 +12,19 @@
 // (code 2), et la valeur brute part dans le journal : ptzd ne suppose jamais. L'inclinaison est le second témoin ;
 // illisible, elle manque simplement.
 // Mêmes codes de sortie que `on` et `off`.
-// obsbot-ai serve : garde le SDK chargé et lit les ordres `on`, `off`, `privacy on`, `privacy off` ou
-// `privacy status` sur l'entrée, un par ligne ; répond sur la sortie par « obsbot-ai: ready », puis par ordre
+// obsbot-ai exposure-status | exposure-set <obturation> <auto|manual> : exposition de la Tiny 2 (spec § 6.11). Pour la
+// Tiny 2, seules cameraGetExposureAbsolute et cameraSetExposureAbsolute s'appliquent (essai du 20/10 ; les autres
+// fonctions d'exposition du SDK sont réservées à la Tail Air). `exposure-status` écrit l'obturation et le mode lus,
+// `31 manual` ou `31 auto` ; `exposure-set` applique le couple donné (en `auto`, l'obturation donnée est celle
+// d'origine, la caméra l'ignore tant qu'elle reste automatique). Le gain n'est ni lu ni écrit : la caméra garde celui
+// d'OBSBOT Center. Mêmes codes de sortie que `on` et `off`.
+// obsbot-ai serve : garde le SDK chargé et lit les ordres `on`, `off`, `privacy on`, `privacy off`,
+// `privacy status`, `exposure status` ou `exposure set <obturation> <auto|manual>` sur l'entrée, un par ligne ; répond sur la sortie par « obsbot-ai: ready », puis par ordre
 // « obsbot-ai: ok » ou « obsbot-ai: err <code> », avec les codes ci-dessus : 1 (caméra introuvable), 2 (erreur du
 // SDK), 3 (ordre inconnu, d'un ptzd plus récent que cet utilitaire). `privacy status` répond « obsbot-ai: ok run
 // 69.8 » (l'inclinaison absente si elle ne se lit pas) ; si l'état ne se lit pas, « obsbot-ai: err 2 », suivi de
-// l'inclinaison si elle se lit (« obsbot-ai: err 2 84.9 »). Se termine quand l'entrée se ferme. Lancé par ptzd.
+// l'inclinaison si elle se lit (« obsbot-ai: err 2 84.9 »). `exposure status` répond « obsbot-ai: ok 31 manual » (ou
+// « err 2 » si la lecture est refusée) ; `exposure set` répond « ok » ou « err 2 ». Se termine quand l'entrée se ferme. Lancé par ptzd.
 // En mode serve, la vraie sortie standard est réservée aux réponses : tout ce que le SDK écrit sur la
 // sortie standard va vers l'erreur standard (le journal), pour ne jamais se mêler aux réponses.
 // En mode serve, un fil surveille aussi le parent : si ptzd meurt pendant que le SDK bloque le fil principal,
@@ -28,6 +35,7 @@
 #include <dev/devs.hpp>
 #include <fcntl.h>
 #include <iostream>
+#include <cstdlib>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -115,7 +123,14 @@ static std::string describe(const char *state, bool hasPitch, float pitch) {
 
 // Un ordre du mode serve ou du mode à un coup. Les ordres du mode serve s'écrivent « privacy on » ; ceux du mode
 // à un coup « privacy-on » (un seul argument).
-enum class Order { TrackingOn, TrackingOff, PrivacyOn, PrivacyOff, PrivacyStatus, Unknown };
+enum class Order { TrackingOn, TrackingOff, PrivacyOn, PrivacyOff, PrivacyStatus, ExposureStatus, ExposureSet, Unknown };
+
+// Un ordre et ses arguments : l'obturation et le mode de `ExposureSet`.
+struct Command {
+    Order order = Order::Unknown;
+    int32_t shutter = 0;
+    bool autoMode = false;
+};
 
 static Order parseOrder(const std::string &text) {
     if (text == "on") return Order::TrackingOn;
@@ -123,7 +138,52 @@ static Order parseOrder(const std::string &text) {
     if (text == "privacy on" || text == "privacy-on") return Order::PrivacyOn;
     if (text == "privacy off" || text == "privacy-off") return Order::PrivacyOff;
     if (text == "privacy status" || text == "privacy-status") return Order::PrivacyStatus;
+    if (text == "exposure status" || text == "exposure-status") return Order::ExposureStatus;
     return Order::Unknown;
+}
+
+// Les arguments de `exposure set` : une obturation entière positive ou nulle, puis `auto` ou `manual`. Autre chose :
+// ordre inconnu (code 3), jamais un réglage deviné.
+static bool parseExposureArguments(const std::string &shutter, const std::string &mode, Command *command) {
+    if (shutter.empty() || shutter.size() > 9 || shutter.find_first_not_of("0123456789") != std::string::npos) {
+        return false;
+    }
+    if (mode != "auto" && mode != "manual") {
+        return false;
+    }
+    command->order = Order::ExposureSet;
+    command->shutter = static_cast<int32_t>(std::strtol(shutter.c_str(), nullptr, 10));
+    command->autoMode = mode == "auto";
+    return true;
+}
+
+// Mode serve : « exposure set 31 auto » ; les ordres sans argument passent par `parseOrder`.
+static Command parseServeLine(const std::string &line) {
+    Command command;
+    if (line.rfind("exposure set ", 0) == 0) {
+        const std::string rest = line.substr(std::strlen("exposure set "));
+        const std::size_t space = rest.find(' ');
+        if (space != std::string::npos) {
+            parseExposureArguments(rest.substr(0, space), rest.substr(space + 1), &command);
+        }
+        return command;
+    }
+    // Les ordres du mode serve n'acceptent que les formes à espace (« privacy on »).
+    if (line.rfind("privacy-", 0) != 0 && line.rfind("exposure-", 0) != 0) {
+        command.order = parseOrder(line);
+    }
+    return command;
+}
+
+// Mode à un coup : « exposure-set 31 auto » (trois arguments) ou un ordre sans argument.
+static Command parseArguments(int argc, char **argv) {
+    Command command;
+    if (argc == 4 && std::strcmp(argv[1], "exposure-set") == 0) {
+        parseExposureArguments(argv[2], argv[3], &command);
+    } else if (argc == 2 && std::strchr(argv[1], ' ') == nullptr) {
+        command.order = parseOrder(argv[1]);
+    }
+    return command;
 }
 
 // Ce que rend une lecture de l'état (`PrivacyStatus`) : l'état lu (nul sinon) et l'inclinaison, le second témoin.
@@ -131,13 +191,38 @@ struct Reading {
     const char *state = nullptr;
     bool hasPitch = false;
     float pitch = 0;
+    // Lecture de l'exposition (`ExposureStatus`).
+    bool hasExposure = false;
+    int32_t shutter = 0;
+    bool autoMode = false;
 };
+
+// Exposition de la Tiny 2 (spec § 6.11) : l'obturation et le mode. Un refus du SDK est un échec (code 2), jamais un
+// réglage deviné.
+static int32_t readExposure(const std::shared_ptr<Device> &tiny2, Reading *reading) {
+    int32_t shutter = 0;
+    bool autoMode = false;
+    const int32_t result = tiny2->cameraGetExposureAbsolute(shutter, autoMode);
+    if (result != RM_RET_OK) {
+        std::fprintf(stderr, "obsbot-ai : lecture de l'exposition refusée (%d)\n", result);
+        return result;
+    }
+    reading->hasExposure = true;
+    reading->shutter = shutter;
+    reading->autoMode = autoMode;
+    return RM_RET_OK;
+}
+
+// « 31 manual » ou « 31 auto » : la forme écrite par `exposure-status` et après « ok » en mode serve.
+static std::string describeExposure(const Reading &reading) {
+    return std::to_string(reading.shutter) + (reading.autoMode ? " auto" : " manual");
+}
 
 // Exécute l'ordre ; `reading` reçoit l'état et l'inclinaison lus pour `PrivacyStatus` (l'inclinaison est lue même si
 // l'état ne se lit pas). Un ordre inconnu n'arrive pas jusqu'ici (il est refusé avant, avec le code 3) ; s'il y
 // arrivait, ce serait un échec, jamais un faux succès.
-static int32_t execute(const std::shared_ptr<Device> &tiny2, Order order, Reading *reading) {
-    switch (order) {
+static int32_t execute(const std::shared_ptr<Device> &tiny2, const Command &command, Reading *reading) {
+    switch (command.order) {
     case Order::TrackingOn: return setTracking(tiny2, true);
     case Order::TrackingOff: return setTracking(tiny2, false);
     case Order::PrivacyOn: return setPrivacy(tiny2, true);
@@ -147,6 +232,8 @@ static int32_t execute(const std::shared_ptr<Device> &tiny2, Order order, Readin
         reading->hasPitch = readPitch(tiny2, &reading->pitch);
         return result;
     }
+    case Order::ExposureStatus: return readExposure(tiny2, reading);
+    case Order::ExposureSet: return tiny2->cameraSetExposureAbsolute(command.shutter, command.autoMode);
     case Order::Unknown: break;
     }
     return RM_RET_ERR;
@@ -200,17 +287,18 @@ static int serve() {
     reply(replies, "ready");
     std::string line;
     while (std::getline(std::cin, line)) {
-        // Les ordres du mode serve n'acceptent que la forme « privacy on » (avec une espace).
-        const Order order = line.rfind("privacy-", 0) == 0 ? Order::Unknown : parseOrder(line);
+        const Command command = parseServeLine(line);
         Reading reading;
-        if (order == Order::Unknown) {
+        if (command.order == Order::Unknown) {
             reply(replies, "err 3");
-        } else if (execute(tiny2, order, &reading) != RM_RET_OK) {
+        } else if (execute(tiny2, command, &reading) != RM_RET_OK) {
             // Une lecture de l'état ratée garde son second témoin : « err 2 84.9 ».
             const std::string witness = describe(nullptr, reading.hasPitch, reading.pitch);
             reply(replies, witness.empty() ? "err 2" : ("err 2 " + witness).c_str());
         } else if (reading.state != nullptr) {
             reply(replies, ("ok " + describe(reading.state, reading.hasPitch, reading.pitch)).c_str());
+        } else if (reading.hasExposure) {
+            reply(replies, ("ok " + describeExposure(reading)).c_str());
         } else {
             reply(replies, "ok");
         }
@@ -223,10 +311,10 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::strcmp(argv[1], "serve") == 0) {
         return serve();
     }
-    const Order order = argc == 2 ? parseOrder(argv[1]) : Order::Unknown;
-    // Le mode à un coup n'accepte que la forme « privacy-on » (un seul argument, sans espace).
-    if (order == Order::Unknown || std::strchr(argv[1], ' ') != nullptr) {
-        std::fprintf(stderr, "usage : obsbot-ai on|off|privacy-on|privacy-off|privacy-status|serve\n");
+    // Le mode à un coup n'accepte que les formes sans espace (« privacy-on », « exposure-set 31 auto » en trois arguments).
+    const Command command = parseArguments(argc, argv);
+    if (command.order == Order::Unknown) {
+        std::fprintf(stderr, "usage : obsbot-ai on|off|privacy-on|privacy-off|privacy-status|exposure-status|exposure-set <obturation> <auto|manual>|serve\n");
         return 3;
     }
     auto tiny2 = findTiny2();
@@ -234,7 +322,7 @@ int main(int argc, char **argv) {
         notFound(nullptr);
     }
     Reading reading;
-    int32_t result = execute(tiny2, order, &reading);
+    int32_t result = execute(tiny2, command, &reading);
     Devices::get().close();
     if (result != RM_RET_OK) {
         std::fprintf(stderr, "obsbot-ai : %s a renvoyé %d\n", argv[1], result);
@@ -243,13 +331,16 @@ int main(int argc, char **argv) {
         }
         return 2;
     }
-    switch (order) {
+    switch (command.order) {
     case Order::TrackingOn: std::printf("obsbot-ai : suivi IA allumé\n"); break;
     case Order::TrackingOff: std::printf("obsbot-ai : suivi IA coupé\n"); break;
     case Order::PrivacyOn: std::printf("obsbot-ai : vie privée allumée\n"); break;
     case Order::PrivacyOff: std::printf("obsbot-ai : vie privée coupée\n"); break;
     // L'état et l'inclinaison (« privacy 84.9 »), pour un script ou un essai à la main.
     case Order::PrivacyStatus: std::printf("%s\n", describe(reading.state, reading.hasPitch, reading.pitch).c_str()); break;
+    // L'obturation et le mode lus (« 31 manual »), puis une confirmation pour l'ordre.
+    case Order::ExposureStatus: std::printf("%s\n", describeExposure(reading).c_str()); break;
+    case Order::ExposureSet: std::printf("obsbot-ai : exposition %s\n", command.autoMode ? "automatique" : "manuelle"); break;
     case Order::Unknown: break;
     }
     return 0;
