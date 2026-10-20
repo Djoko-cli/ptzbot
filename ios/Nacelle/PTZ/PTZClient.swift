@@ -311,6 +311,11 @@ final class PTZClient {
         send(.privacy(on: on))
     }
 
+    /// Active ou désactive l'exposition automatique de la caméra (spec § 6.11).
+    func setAutoExposure(_ on: Bool) {
+        send(.autoExposure(on: on))
+    }
+
     func takeControl() {
         send(.takeControl)
     }

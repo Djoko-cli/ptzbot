@@ -72,6 +72,14 @@ struct StatusBannerTests {
         #expect(ControlScreen.privacyHint(on: true) == "Ramène la caméra à sa position d'avant la vie privée")
     }
 
+    @Test("VoiceOver : l'indication du bouton d'exposition auto dit ce qu'il fait, ou pourquoi il est grisé (spec § 6.11)")
+    func autoExposureHint() {
+        #expect(ControlScreen.autoExposureHint(.off) == "Laisse la caméra régler elle-même l'exposition")
+        #expect(ControlScreen.autoExposureHint(.on) == "Désactive l'exposition automatique et remet le réglage d'avant")
+        #expect(ControlScreen.autoExposureHint(.unavailable) == "Indisponible : demande le SDK OBSBOT sur le Mac")
+        #expect(ControlScreen.autoExposureHint(nil) == "Indisponible : demande une mise à jour de PTZBot sur le Mac")
+    }
+
     @Test("Priorité : injoignable, débranchée, vie privée, suivi IA, connexion")
     func priority() {
         let everything = state(camera: .absent, control: .taking, privacy: true)
