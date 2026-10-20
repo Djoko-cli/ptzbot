@@ -23,6 +23,8 @@ struct ClientMessageTests {
         .closePairing,
         .forgetMe,
         .aiUpdated,
+        .autoExposure(on: true),
+        .autoExposure(on: false),
     ])
     func roundTrip(_ message: ClientMessage) throws {
         let text = try NacelleCodec.encode(message)
@@ -42,6 +44,13 @@ struct ClientMessageTests {
         #expect(try NacelleCodec.encode(ClientMessage.closePairing) == #"{"type":"closePairing"}"#)
         #expect(try NacelleCodec.encode(ClientMessage.aiUpdated) == #"{"type":"aiUpdated"}"#)
         #expect(try NacelleCodec.encode(ClientMessage.aiTracking(on: true)) == #"{"on":true,"type":"aiTracking"}"#)
+    }
+
+    @Test("autoExposure s'écrit avec son type et son choix (spec § 6.11)")
+    func autoExposureFormat() throws {
+        #expect(try NacelleCodec.encode(ClientMessage.autoExposure(on: true)) == #"{"on":true,"type":"autoExposure"}"#)
+        #expect(try NacelleCodec.decodeClient(#"{"on":false,"type":"autoExposure"}"#) == .autoExposure(on: false))
+        #expect(throws: (any Error).self) { try NacelleCodec.decodeClient(#"{"type":"autoExposure"}"#) }
     }
 
     @Test("forgetMe s'écrit avec son seul type")
@@ -221,6 +230,43 @@ struct ServerMessageTests {
         #expect(decoded.privacyMode == nil)
         var expected = snapshot
         expected.privacyMode = nil
+        #expect(decoded == expected)
+    }
+
+    @Test("autoExposure : présent, écrit et relu (spec § 6.11)", arguments: [AutoExposure.on, .off, .unavailable])
+    func autoExposurePresent(value: AutoExposure) throws {
+        var snapshot = Self.known
+        snapshot.autoExposure = value
+        let text = try NacelleCodec.encode(ServerMessage.state(snapshot))
+        #expect(text.contains(#""autoExposure":"\#(value.rawValue)""#))
+        #expect(try NacelleCodec.decodeServer(text) == .state(snapshot))
+    }
+
+    @Test("autoExposure : absent (ptzd d'avant l'exposition), il n'est pas écrit et se lit nil")
+    func autoExposureAbsent() throws {
+        let text = #"{"aiTracking":"off","camera":"connected","control":"ready","moving":false,"pan":0,"privacy":false,"tilt":0,"type":"state","zoom":0}"#
+        guard case let .state(snapshot) = try NacelleCodec.decodeServer(text) else {
+            Issue.record("state attendu")
+            return
+        }
+        #expect(snapshot.autoExposure == nil)
+        // Sans valeur, rien n'est écrit : un ancien client n'a rien de nouveau à ignorer.
+        #expect(try !NacelleCodec.encode(ServerMessage.state(snapshot)).contains("autoExposure"))
+    }
+
+    @Test("Une valeur d'autoExposure inconnue (un futur ptzd) se lit nil : l'état reste lisible")
+    func autoExposureUnknownValue() throws {
+        var snapshot = Self.known
+        snapshot.autoExposure = .on
+        let text = try NacelleCodec.encode(ServerMessage.state(snapshot))
+        let future = text.replacingOccurrences(of: #""autoExposure":"on""#, with: #""autoExposure":"visage""#)
+        guard case let .state(decoded) = try NacelleCodec.decodeServer(future) else {
+            Issue.record("state attendu")
+            return
+        }
+        #expect(decoded.autoExposure == nil)
+        var expected = snapshot
+        expected.autoExposure = nil
         #expect(decoded == expected)
     }
 

@@ -37,6 +37,9 @@ public enum ClientMessage: Equatable, Sendable {
     /// PTZBot a recompilé ou réinstallé obsbot-ai : ptzd redémarre son utilitaire et réconcilie la vie privée
     /// (spec § 6.5 bis). 127.0.0.1 seulement.
     case aiUpdated
+    /// Active (true) ou désactive (false) l'exposition automatique de la caméra ; désactivée, la caméra revient au réglage
+    /// d'avant l'activation (spec § 6.11).
+    case autoExposure(on: Bool)
 }
 
 /// Présence de la caméra côté Mac.
@@ -56,6 +59,16 @@ public enum AITracking: String, Codable, Sendable {
 /// Disponibilité du retour audio (talkd) côté Mac, lue par ptzd dans l'état de talkd (spec parler § 5).
 public enum TalkbackAvailability: String, Codable, Sendable {
     case ready
+    case unavailable
+}
+
+/// Exposition automatique de la caméra, telle que ptzd la publie (spec § 6.11).
+public enum AutoExposure: String, Codable, Sendable {
+    /// Voulue : la caméra est (ou va être) en exposition automatique continue.
+    case on
+    /// Non voulue : la caméra garde son réglage manuel.
+    case off
+    /// ptzd ne peut pas la tenir : pas d'`obsbot-ai` (SDK absent), ou `obsbot-ai` d'avant l'exposition automatique.
     case unavailable
 }
 
@@ -171,6 +184,21 @@ public enum PrivacyFailureText {
     public static let exitNeedsUpdate = "La vie privée n'a pas pu être levée : obsbot-ai n'est pas à jour."
 }
 
+/// Les messages `uvcFailed` de l'exposition automatique (spec § 6.11). ptzd les envoie tels quels ; les apps les
+/// reconnaissent par ces textes partagés pour montrer leur propre traduction (comme `AIFailureText`).
+public enum ExposureFailureText {
+    /// Pas d'`obsbot-ai` : sans le SDK, l'exposition ne se règle pas.
+    public static let noSDK = "L'exposition automatique demande le SDK OBSBOT."
+    /// `obsbot-ai` est d'avant l'exposition automatique et attend sa recompilation.
+    public static let needsUpdate = "L'exposition automatique n'est pas disponible : obsbot-ai n'est pas à jour."
+    /// Activation : le réglage actuel de la caméra n'a pas pu être lu, donc rien n'a été changé.
+    public static let readFailed = "L'exposition automatique n'a pas été activée : le réglage de la caméra ne se lit pas."
+    /// Activation : la caméra a refusé le passage en automatique.
+    public static let activateFailed = "L'exposition automatique n'a pas pu être activée."
+    /// Désactivation : la caméra est restée en exposition automatique.
+    public static let deactivateFailed = "L'exposition automatique n'a pas pu être désactivée : la caméra est restée en automatique."
+}
+
 /// État complet publié par ptzd.
 public struct StateSnapshot: Equatable, Sendable {
     public var camera: CameraPresence
@@ -190,6 +218,8 @@ public struct StateSnapshot: Equatable, Sendable {
     public var aiTracking: AITracking
     /// Un ptzd d'avant la parole n'envoie pas ce champ : l'app le lit `unavailable`.
     public var talkback: TalkbackAvailability
+    /// Exposition automatique voulue ; nil chez un ptzd d'avant ce champ (spec § 6.11).
+    public var autoExposure: AutoExposure?
 
     public init(
         camera: CameraPresence,
@@ -202,7 +232,8 @@ public struct StateSnapshot: Equatable, Sendable {
         aiTracking: AITracking = .unknown,
         talkback: TalkbackAvailability = .unavailable,
         privacyMode: PrivacyMode? = nil,
-        privacyReason: PrivacyReason? = nil
+        privacyReason: PrivacyReason? = nil,
+        autoExposure: AutoExposure? = nil
     ) {
         self.camera = camera
         self.control = control
@@ -215,6 +246,7 @@ public struct StateSnapshot: Equatable, Sendable {
         self.talkback = talkback
         self.privacyMode = privacyMode
         self.privacyReason = privacyReason
+        self.autoExposure = autoExposure
     }
 }
 

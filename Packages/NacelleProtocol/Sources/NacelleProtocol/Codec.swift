@@ -81,6 +81,8 @@ extension ClientMessage: Codable {
             self = .forgetMe
         case "aiUpdated":
             self = .aiUpdated
+        case "autoExposure":
+            self = .autoExposure(on: try container.decode(Bool.self, forKey: .on))
         default:
             throw NacelleProtocolError.unknownType(type)
         }
@@ -137,6 +139,9 @@ extension ClientMessage: Codable {
             try container.encode("forgetMe", forKey: .type)
         case .aiUpdated:
             try container.encode("aiUpdated", forKey: .type)
+        case let .autoExposure(on):
+            try container.encode("autoExposure", forKey: .type)
+            try container.encode(on, forKey: .on)
         }
     }
 
@@ -147,7 +152,7 @@ extension ClientMessage: Codable {
 
 extension StateSnapshot: Codable {
     private enum CodingKeys: String, CodingKey {
-        case camera, control, privacy, pan, tilt, zoom, moving, aiTracking, talkback, privacyMode, privacyReason
+        case camera, control, privacy, pan, tilt, zoom, moving, aiTracking, talkback, privacyMode, privacyReason, autoExposure
     }
 
     public init(from decoder: any Decoder) throws {
@@ -168,7 +173,9 @@ extension StateSnapshot: Codable {
             // Absent chez un ptzd d'avant la vie privée V2 ; une valeur inconnue (un futur ptzd) se lit aussi nil (spec § 6.5 bis).
             privacyMode: (try? container.decodeIfPresent(PrivacyMode.self, forKey: .privacyMode)),
             // De même pour la raison du mode `tilt` : absente ou inconnue, elle se lit nil.
-            privacyReason: (try? container.decodeIfPresent(PrivacyReason.self, forKey: .privacyReason))
+            privacyReason: (try? container.decodeIfPresent(PrivacyReason.self, forKey: .privacyReason)),
+            // Absent chez un ptzd d'avant l'exposition automatique, et nil aussi pour une valeur inconnue (spec § 6.11).
+            autoExposure: (try? container.decodeIfPresent(AutoExposure.self, forKey: .autoExposure))
         )
     }
 
@@ -187,6 +194,7 @@ extension StateSnapshot: Codable {
         // Omis (et non null) hors vie privée : un client ancien n'a rien de nouveau à ignorer.
         try container.encodeIfPresent(privacyMode, forKey: .privacyMode)
         try container.encodeIfPresent(privacyReason, forKey: .privacyReason)
+        try container.encodeIfPresent(autoExposure, forKey: .autoExposure)
     }
 }
 
