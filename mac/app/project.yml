@@ -72,7 +72,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # La version publiée (outils/publier.sh) ; le numéro de compilation, que compare Sparkle, est donné à la
         # publication : le nombre de commits de main. Une compilation de travail garde 1 : Sparkle n'y démarre pas.
-        MARKETING_VERSION: "1.1.1"
+        MARKETING_VERSION: "1.2.0"
         CURRENT_PROJECT_VERSION: "1"
         # Le flux des mises à jour (appcast.xml du dépôt, que publier.sh tient à jour, à son adresse brute) et la clé
         # publique ; la répétition les remplace en ligne de commande.

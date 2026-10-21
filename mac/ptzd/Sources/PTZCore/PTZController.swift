@@ -27,11 +27,16 @@ public final class PTZController {
     private let scheduler: any Scheduler
     /// L'utilitaire obsbot-ai (par la file des ordres), à tenir chaud quand ptzd dispose du SDK.
     private let ai: any AIRunner
+    /// La file des ordres de l'utilitaire (c'est `ai`) : ses ordres d'exposition en attente sont jetés quand l'exposition
+    /// abandonne sa session.
+    private let queue: AIOrderQueue
     private let motion: MotionDriver
     private let zoom: ZoomDriver
     /// La vie privée : état voulu, état constaté et réconciliateur (spec § 6.5 bis).
     private let privacy: PrivacyReconciler
     private let control: ControlTaker
+    /// L'exposition automatique (spec § 6.11).
+    private let exposure: ExposureReconciler
     private let log: LogSink
     private var lastControl: ControlState = .idle
     /// Retour audio de talkd, lu par `TalkbackWatcher` (spec parler § 5).
@@ -53,6 +58,7 @@ public final class PTZController {
         // L'utilitaire ne traite qu'un ordre à la fois : la coupure du suivi IA et la vie privée native passent par la
         // même file, l'une après l'autre (spec § 6.5 bis).
         let queue = AIOrderQueue(runner: ai)
+        self.queue = queue
         self.ai = queue
         let motion = MotionDriver(camera: camera, scheduler: scheduler, settings: settings, log: log)
         let zoom = ZoomDriver(camera: camera, scheduler: scheduler, log: log)
@@ -70,6 +76,8 @@ public final class PTZController {
             control: control,
             log: log
         )
+        let exposure = ExposureReconciler(runner: queue, store: store, log: log)
+        self.exposure = exposure
         snapshot = StateSnapshot(
             camera: camera.isPresent ? .connected : .absent,
             control: .idle,
@@ -77,12 +85,20 @@ public final class PTZController {
             pan: nil, tilt: nil, zoom: nil,
             moving: false,
             privacyMode: privacy.mode,
-            privacyReason: privacy.reason
+            privacyReason: privacy.reason,
+            autoExposure: exposure.published
         )
         motion.onChange = { [weak self] in self?.publish() }
         zoom.onChange = { [weak self] in self?.publish() }
         privacy.onChange = { [weak self] in self?.publish() }
         privacy.onClientError = { [weak self] in self?.onClientError?($0, $1, $2) }
+        privacy.onEnded = { [weak self] in self?.privacyEnded() }
+        // Aucun ordre d'exposition tant que la vie privée est voulue ou en cours (spec § 6.11) : la caméra peut dormir en
+        // mode natif.
+        exposure.canOrder = { [weak self] in !(self?.privacy.isActive ?? false) }
+        exposure.discardQueuedOrders = { [weak queue] in queue?.dropQueuedExposure() }
+        exposure.onChange = { [weak self] in self?.publish() }
+        exposure.onClientError = { [weak self] in self?.onClientError?($0, $1, $2) }
         control.onChange = { [weak self] in self?.controlChanged() }
     }
 
@@ -152,10 +168,13 @@ public final class PTZController {
     public func aiUpdated() {
         log("obsbot-ai mis à jour par PTZBot : utilitaire relancé.")
         privacy.abandonSession()
+        exposure.abandonSession()
         control.reset()
         lastControl = control.state
         keepAIWarm()
         privacy.utilityUpdated()
+        // Toujours : l'indicateur « en cours de mise à jour » doit retomber même caméra absente.
+        exposure.utilityUpdated(cameraPresent: camera.isPresent)
         publish()
     }
 
@@ -188,7 +207,18 @@ public final class PTZController {
             guard camera.isPresent else {
                 return (.cameraAbsent, "Caméra débranchée.")
             }
+            if on {
+                // La vie privée passe avant l'exposition : ses ordres en file sont jetés, un ordre déjà parti va à son
+                // terme (l'entrée prend alors le repli, −70° d'abord), et rien d'autre ne part à la caméra.
+                exposure.abandonSession()
+            }
             return privacy.request(on: on, from: client)
+        case let .autoExposure(on):
+            // Utilisable pendant la vie privée : le choix est retenu et publié, l'ordre part à la sortie (spec § 6.11).
+            guard camera.isPresent else {
+                return (.cameraAbsent, "Caméra débranchée.")
+            }
+            return exposure.request(on: on, from: client)
         case let .aiTracking(on):
             if let refusal = refusal() {
                 return refusal
@@ -214,6 +244,7 @@ public final class PTZController {
     public func cameraPresenceChanged(_ present: Bool) {
         // Un ordre de vie privée native en cours ne vaut plus : sa réponse est écartée, l'état réel sera relu.
         privacy.abandonSession()
+        exposure.abandonSession()
         // Le SDK gardé par l'utilitaire du suivi IA ne connaît plus la caméra : session neuve au prochain ordre.
         control.reset()
         lastControl = control.state
@@ -232,7 +263,17 @@ public final class PTZController {
             zoom.reset()
         }
         privacy.cameraPresenceChanged(present)
+        if present {
+            // La caméra a pu oublier le mode automatique en redémarrant : l'exposition voulue est réappliquée.
+            exposure.reapply(reason: "caméra branchée")
+        }
         publish()
+    }
+
+    /// La vie privée est finie, la caméra lue éveillée (ou jamais endormie) : l'exposition voulue est réappliquée.
+    private func privacyEnded() {
+        guard camera.isPresent else { return }
+        exposure.privacyEnded()
     }
 
     /// Fin d'une coupure du suivi IA : sur une caméra qui démarre, obsbot-ai off a pu tourner en même temps que la
@@ -280,7 +321,8 @@ public final class PTZController {
             aiTracking: control.tracking,
             talkback: talkback,
             privacyMode: privacy.mode,
-            privacyReason: privacy.reason
+            privacyReason: privacy.reason,
+            autoExposure: exposure.published
         )
         guard next != snapshot else { return }
         snapshot = next

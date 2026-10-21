@@ -56,6 +56,47 @@ struct StateStoreTests {
         #expect(try !String(contentsOf: url, encoding: .utf8).contains("mode"))
     }
 
+    @Test("L'exposition automatique voulue et son réglage d'origine : aller-retour, écrits sous « autoExposure » et « exposureOrigin » (spec § 6.11)")
+    func exposureRoundTrip() throws {
+        let store = JSONFileStateStore(url: url, log: { _ in })
+        let state = PersistedState(
+            privacy: false, saved: nil, autoExposure: true, exposureOrigin: ExposureSetting(shutter: 31, auto: false)
+        )
+        try store.save(state)
+        #expect(store.load() == state)
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(text.contains(#""autoExposure" : true"#))
+        #expect(text.contains(#""exposureOrigin""#))
+    }
+
+    @Test("Sans exposition automatique, rien n'est écrit : le fichier reste lisible par la 1.1.1")
+    func exposureOffWritesNothing() throws {
+        let store = JSONFileStateStore(url: url, log: { _ in })
+        try store.save(PersistedState(privacy: true, saved: nil))
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(!text.contains("xposure"))
+        #expect(!text.contains("autoExposure"))
+    }
+
+    @Test("Un state.json d'avant l'exposition automatique se lit « désactivée », sans origine")
+    func legacyFileWithoutExposure() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(#"{"native":false,"privacy":true,"saved":{"pan":30,"tilt":-10,"zoom":33}}"#.utf8).write(to: url)
+        let loaded = JSONFileStateStore(url: url, log: { _ in }).load()
+        #expect(loaded.privacy)
+        #expect(!loaded.autoExposure)
+        #expect(loaded.exposureOrigin == nil)
+    }
+
+    @Test("Un réglage d'origine illisible se lit nil : l'exposition voulue est gardée, et la désactivation relit l'obturation")
+    func unreadableExposureOrigin() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(#"{"autoExposure":true,"exposureOrigin":{"shutter":"x"},"native":false,"privacy":false}"#.utf8).write(to: url)
+        let loaded = JSONFileStateStore(url: url, log: { _ in }).load()
+        #expect(loaded.autoExposure)
+        #expect(loaded.exposureOrigin == nil)
+    }
+
     @Test("Fichier absent : pas de vie privée")
     func missingFile() {
         let store = JSONFileStateStore(url: url, log: { _ in })

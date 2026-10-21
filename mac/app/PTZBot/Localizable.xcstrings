@@ -596,6 +596,23 @@
         }
       }
     },
+    "Exposition auto": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto exposure"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exposition auto"
+          }
+        }
+      }
+    },
     "Talkback": {
       "extractionState": "manual",
       "localizations": {

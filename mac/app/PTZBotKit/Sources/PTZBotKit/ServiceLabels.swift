@@ -164,6 +164,25 @@ extension Labels {
         return tracking == .unknown ? Localization.text("État inconnu") : nil
     }
 
+    /// L'icône de l'exposition automatique, la même que sur iOS pour que la fonction se reconnaisse d'une app à l'autre.
+    public static let exposureIcon = "sun.max"
+
+    /// L'interrupteur « Exposition auto » est utilisable : ptzd tient l'ordre (SDK là, utilitaire à jour) et l'app a le
+    /// SDK. Un ptzd d'avant l'exposition automatique ne publie rien (`nil`) : l'interrupteur reste grisé.
+    public static func exposureEnabled(_ exposure: AutoExposure?, needsSDK: Bool) -> Bool {
+        guard let exposure else { return false }
+        return exposure != .unavailable && !needsSDK
+    }
+
+    /// La petite ligne sous « Exposition auto » : le SDK manque (« SDK OBSBOT requis »), ou ptzd dit l'exposition
+    /// indisponible alors que le SDK est là (obsbot-ai en cours de mise à jour). Rien d'un ptzd ancien.
+    public static func exposureNote(_ exposure: AutoExposure?, needsSDK: Bool) -> String? {
+        if needsSDK {
+            return sdkRequired
+        }
+        return exposure == .unavailable ? Localization.text("Indisponible : obsbot-ai est en cours de mise à jour.") : nil
+    }
+
     /// La petite ligne sous « Vie privée » (spec § 6.5 bis). En vie privée, ce qui tient vraiment : « Image et micro
     /// coupés » seulement quand ptzd a constaté le mode natif, « Protection en cours » tant que l'objectif n'a pas été vu
     /// à −70° (rebranchement, démarrage, réveil de la caméra), « Objectif détourné » sinon (mode natif en cours ou

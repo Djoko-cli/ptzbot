@@ -5,9 +5,11 @@ import Foundation
 /// spec § 6.9), il reste chargé tant que ptzd tourne et n'est arrêté que par une réinitialisation, une mise à jour ou un
 /// incident, après quoi ptzd le relance (`prewarm`).
 ///
-/// Protocole : un ordre par ligne (`on`, `off`, `privacy on`, `privacy off` ou `privacy status`) sur l'entrée de
+/// Protocole : un ordre par ligne (`on`, `off`, `privacy on`, `privacy off`, `privacy status`, `exposure status` ou
+/// `exposure set <obturation> <auto|manual>`) sur l'entrée de
 /// l'utilitaire. Sur sa sortie, les lignes préfixées par `obsbot-ai: ` sont des réponses (`ready` une fois le SDK prêt,
-/// puis `ok`, `ok <état> [<inclinaison>]` pour `privacy status`, ou `err <code> [<inclinaison>]` par ordre) ; toute
+/// puis `ok`, `ok <état> [<inclinaison>]` pour `privacy status`, `ok <obturation> <auto|manual>` pour `exposure status`, ou
+/// `err <code> [<inclinaison>]` par ordre) ; toute
 /// autre ligne est du bruit du SDK, ajouté au fichier de sortie. L'utilitaire se termine quand son entrée se ferme, ce
 /// qui arrive aussi si ptzd meurt.
 ///
@@ -172,6 +174,35 @@ public final class ResidentAIRunner: AIRunner {
                 completion(.failed(result, pitch: words.first.flatMap { Double($0) }))
             }
         }
+    }
+
+    /// `exposure status` : « ok 31 manual » ou « ok 31 auto ». Un mode ou une obturation illisibles sont un échec, jamais
+    /// un réglage deviné (le retour au réglage d'origine en dépend).
+    public func readExposure(completion: @escaping @MainActor @Sendable (ExposureReading) -> Void) {
+        submit(.exposureStatus) { [weak self] reply in
+            switch reply {
+            case let .ok(words):
+                // Mêmes bornes qu'obsbot-ai (`exposure set`) : 9 chiffres au plus, sans signe. Une obturation que l'ordre
+                // refuserait n'est pas un réglage qu'on saurait remettre.
+                if words.count == 2, Self.isShutter(words[0]), let shutter = Int(words[0]), words[1] == "auto" || words[1] == "manual" {
+                    completion(.setting(ExposureSetting(shutter: shutter, auto: words[1] == "auto")))
+                } else {
+                    self?.log("obsbot-ai : réglage d'exposition illisible (« \(words.joined(separator: " ")) »).")
+                    completion(.failed(.sdkError))
+                }
+            case let .failed(result, _):
+                completion(.failed(result))
+            }
+        }
+    }
+
+    /// Une obturation lisible et remettable : 1 à 9 chiffres, comme `exposure set` d'obsbot-ai.
+    private static func isShutter(_ text: Substring) -> Bool {
+        (1...9).contains(text.count) && text.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
+    public func runExposure(_ setting: ExposureSetting, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        submit(.exposure(setting)) { completion(Self.result(of: $0)) }
     }
 
     private static func result(of reply: Reply) -> AIResult {
@@ -371,8 +402,9 @@ public final class ResidentAIRunner: AIRunner {
             if code == 1 {
                 // Caméra introuvable : l'utilitaire sort de lui-même.
                 fail(.cameraNotFound)
-            } else if code == 2, order?.order == .privacyStatus {
-                // Lecture de l'état ratée : la session n'est pas douteuse, l'utilitaire reste (constat D).
+            } else if code == 2, order?.order == .privacyStatus || order?.order == .exposureStatus {
+                // Lecture ratée (l'état, ou le réglage d'exposition) : la session n'est pas douteuse, l'utilitaire reste
+                // (constat D).
                 finish(.failed(.sdkError, Array(words.dropFirst(2))))
             } else {
                 // Session du SDK douteuse, ou utilitaire plus ancien que l'ordre (code 3) : la prochaine fois, un

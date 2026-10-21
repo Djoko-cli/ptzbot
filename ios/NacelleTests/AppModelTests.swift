@@ -152,8 +152,17 @@ struct AppModelTests {
         return transport
     }
 
-    private func send(privacy: Bool, aiTracking: AITracking = .unknown, control: ControlState = .ready, on transport: FakeTransport) throws {
-        let snapshot = StateSnapshot(camera: .connected, control: control, privacy: privacy, pan: 0, tilt: 0, zoom: 0, moving: false, aiTracking: aiTracking)
+    private func send(
+        privacy: Bool,
+        aiTracking: AITracking = .unknown,
+        control: ControlState = .ready,
+        autoExposure: AutoExposure? = nil,
+        on transport: FakeTransport
+    ) throws {
+        let snapshot = StateSnapshot(
+            camera: .connected, control: control, privacy: privacy, pan: 0, tilt: 0, zoom: 0, moving: false,
+            aiTracking: aiTracking, autoExposure: autoExposure
+        )
         transport.emit(.message(try NacelleCodec.encode(ServerMessage.state(snapshot))))
     }
 
@@ -192,6 +201,34 @@ struct AppModelTests {
         #expect(sent.filter { if case .aiTracking = $0 { true } else { false } } == [.aiTracking(on: true), .aiTracking(on: false)])
         try send(privacy: true, aiTracking: .off, on: transport)
         #expect(!model.aiToggleEnabled)
+        model.deactivate()
+    }
+
+    @Test("Exposition auto : bouton selon l'état publié, utilisable en vie privée, grisé sans SDK ou avec un ptzd ancien ; il envoie l'ordre inverse")
+    func autoExposureButton() throws {
+        SettingsStore(defaults: defaults).save(complete)
+        let model = makeModel()
+        model.activate()
+        #expect(!model.autoExposureToggleEnabled)
+        let transport = try connect(privacy: false)
+        // Un ptzd d'avant l'exposition automatique ne publie rien : grisé.
+        #expect(!model.autoExposureToggleEnabled)
+        try send(privacy: false, autoExposure: .off, on: transport)
+        #expect(model.autoExposureToggleEnabled)
+        #expect(!model.autoExposureOn)
+        model.toggleAutoExposure()
+        try send(privacy: false, autoExposure: .on, on: transport)
+        #expect(model.autoExposureOn)
+        model.toggleAutoExposure()
+        let sent = transport.sent.compactMap { try? NacelleCodec.decodeClient($0) }
+        #expect(sent.filter { if case .autoExposure = $0 { true } else { false } } == [.autoExposure(on: true), .autoExposure(on: false)])
+        // Vie privée : l'interrupteur reste utilisable.
+        try send(privacy: true, autoExposure: .on, on: transport)
+        #expect(model.autoExposureToggleEnabled)
+        // Pas de SDK sur le Mac (ou obsbot-ai à mettre à jour) : grisé.
+        try send(privacy: false, autoExposure: .unavailable, on: transport)
+        #expect(!model.autoExposureToggleEnabled)
+        #expect(!model.autoExposureOn)
         model.deactivate()
     }
 

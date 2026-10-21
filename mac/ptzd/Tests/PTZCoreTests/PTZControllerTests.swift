@@ -447,6 +447,369 @@ struct PTZControllerTests {
     }
 }
 
+@MainActor
+@Suite("Contrôleur : exposition automatique (§ 6.11)")
+struct PTZControllerExposureTests {
+    let camera = FakeCamera()
+    let scheduler = FakeScheduler()
+    let runner = FakeAIRunner()
+    let store = MemoryStateStore()
+    let log = LogRecorder()
+    let errors = ClientErrorBox()
+
+    private static let manual31 = ExposureSetting(shutter: 31, auto: false)
+    private static let auto31 = ExposureSetting(shutter: 31, auto: true)
+
+    init() {
+        runner.nativePrivacyAvailable = true
+    }
+
+    private func makeController() -> PTZController {
+        let controller = PTZController(
+            camera: camera,
+            scheduler: scheduler,
+            ai: runner,
+            store: store,
+            settings: MotionSettings(),
+            isObsbotCenterRunning: { false },
+            log: log.sink
+        )
+        controller.onClientError = { [errors] in errors.values.append(($0, $1, $2)) }
+        return controller
+    }
+
+    @Test("autoExposure(on: true) : l'état publié passe à « on » tout de suite, la caméra est lue puis réglée")
+    func activation() {
+        let controller = makeController()
+        #expect(controller.snapshot.autoExposure == .off)
+        var states: [AutoExposure?] = []
+        controller.onStateChange = { states.append($0.autoExposure) }
+        #expect(controller.handle(.autoExposure(on: true), from: 1) == nil)
+        #expect(controller.snapshot.autoExposure == .on)
+        #expect(states == [.on])
+        runner.answer(.exposureStatus)
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposure == Self.auto31)
+        #expect(controller.snapshot.autoExposure == .on)
+        #expect(errors.values.isEmpty)
+        #expect(controller.handle(.autoExposure(on: false), from: 1) == nil)
+        runner.answer(.exposure(Self.manual31))
+        #expect(controller.snapshot.autoExposure == .off)
+        #expect(runner.exposure == Self.manual31)
+    }
+
+    @Test("Sans SDK : l'état publié est « unavailable » et la demande est refusée (uvcFailed)")
+    func withoutSDK() {
+        runner.nativePrivacyAvailable = false
+        let controller = makeController()
+        #expect(controller.snapshot.autoExposure == .unavailable)
+        let refusal = controller.handle(.autoExposure(on: true), from: 1)
+        #expect(refusal?.code == .uvcFailed)
+        #expect(refusal?.message == ExposureFailureText.noSDK)
+    }
+
+    @Test("Caméra absente : cameraAbsent")
+    func cameraAbsent() {
+        camera.isPresent = false
+        let controller = makeController()
+        #expect(controller.handle(.autoExposure(on: true), from: 1)?.code == .cameraAbsent)
+        #expect(runner.received.isEmpty)
+    }
+
+    @Test("Pendant la vie privée : l'interrupteur reste utilisable (choix retenu et publié), mais aucun ordre n'est donné")
+    func duringPrivacy() {
+        let controller = makeController()
+        _ = controller.handle(.privacy(on: true), from: 1)
+        #expect(controller.snapshot.privacy)
+        #expect(controller.handle(.autoExposure(on: true), from: 1) == nil)
+        #expect(controller.snapshot.autoExposure == .on)
+        // Un seul ordre à la fois : jamais d'ordre refusé par l'utilitaire, chacun répond à son tour.
+        var guardRail = 0
+        while let order = runner.inFlight, guardRail < 20 {
+            runner.answer(order)
+            guardRail += 1
+        }
+        #expect(runner.refused.isEmpty)
+        #expect(runner.exposureReads == 0)
+        #expect(runner.exposureOrders.isEmpty)
+        #expect(controller.snapshot.autoExposure == .on)
+    }
+
+    @Test("Exposition et vie privée partagent la file : un ordre d'exposition en cours ne croise jamais la vie privée, et rien d'autre ne part ensuite")
+    func neverCrossesPrivacy() {
+        let controller = makeController()
+        _ = controller.handle(.autoExposure(on: true), from: 1)
+        #expect(runner.inFlight == .exposureStatus)
+        _ = controller.handle(.privacy(on: true), from: 1)
+        #expect(runner.inFlight == .exposureStatus)
+        runner.answer(.exposureStatus)
+        #expect(runner.refused.isEmpty)
+        var guardRail = 0
+        while let order = runner.inFlight, guardRail < 30 {
+            runner.answer(order)
+            guardRail += 1
+        }
+        #expect(runner.refused.isEmpty)
+        // L'exposition a été abandonnée à l'entrée en vie privée : aucun ordre d'exposition après la lecture.
+        #expect(runner.exposureOrders.isEmpty)
+    }
+
+    @Test("Démarrage et branchement : l'exposition voulue est réappliquée avec l'origine retenue, sans relire le réglage")
+    func reapplyOnPlug() {
+        store.state = PersistedState(privacy: false, saved: nil, autoExposure: true, exposureOrigin: Self.manual31)
+        let controller = makeController()
+        #expect(controller.snapshot.autoExposure == .on)
+        controller.cameraPresenceChanged(true)
+        // L'utilitaire repart : l'ordre part sur la session neuve.
+        #expect(runner.inFlight == .exposure(Self.auto31))
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposureReads == 0)
+        #expect(runner.exposure == Self.auto31)
+
+        // Rebranchement : la caméra a redémarré et oublié le mode automatique.
+        controller.cameraPresenceChanged(false)
+        runner.powerCycle()
+        controller.cameraPresenceChanged(true)
+        #expect(runner.exposure == Self.manual31)
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposure == Self.auto31)
+        #expect(errors.values.isEmpty)
+    }
+
+    @Test("Débranchement pendant un ordre : la réponse perdue n'est pas une erreur, la caméra rebranchée est réglée")
+    func unplugDuringOrder() {
+        let controller = makeController()
+        _ = controller.handle(.autoExposure(on: true), from: 1)
+        runner.answer(.exposureStatus)
+        controller.cameraPresenceChanged(false)
+        #expect(errors.values.isEmpty)
+        #expect(controller.snapshot.autoExposure == .on)
+        camera.isPresent = true
+        controller.cameraPresenceChanged(true)
+        #expect(runner.inFlight == .exposure(Self.auto31))
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposure == Self.auto31)
+    }
+
+    @Test("aiUpdated : l'exposition voulue est réappliquée sur l'utilitaire neuf")
+    func reapplyOnAIUpdated() {
+        store.state = PersistedState(privacy: false, saved: nil, autoExposure: true, exposureOrigin: Self.manual31)
+        let controller = makeController()
+        controller.aiUpdated()
+        #expect(runner.inFlight == .exposure(Self.auto31))
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposure == Self.auto31)
+    }
+
+    @Test("I2 : aiUpdated caméra absente fait retomber « en cours de mise à jour » ; l'ordre part au branchement")
+    func aiUpdatedWithoutCamera() {
+        store.state = PersistedState(privacy: false, saved: nil, autoExposure: true, exposureOrigin: Self.manual31)
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        runner.answer(.exposure(Self.auto31), .unknownOrder)
+        #expect(controller.snapshot.autoExposure == .unavailable)
+        camera.isPresent = false
+        controller.cameraPresenceChanged(false)
+        controller.aiUpdated()
+        #expect(controller.snapshot.autoExposure == .on)
+        camera.isPresent = true
+        controller.cameraPresenceChanged(true)
+        #expect(runner.inFlight == .exposure(Self.auto31))
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposure == Self.auto31)
+    }
+
+    @Test("La vie privée réécrit state.json sans effacer l'exposition automatique")
+    func privacyKeepsExposureFields() {
+        runner.nativePrivacyAvailable = false
+        store.state = PersistedState(privacy: false, saved: nil, autoExposure: true, exposureOrigin: Self.manual31)
+        let controller = makeController()
+        _ = controller.handle(.privacy(on: true), from: 1)
+        #expect(store.state.privacy)
+        #expect(store.state.autoExposure)
+        #expect(store.state.exposureOrigin == Self.manual31)
+        _ = controller.handle(.privacy(on: false), from: 1)
+        #expect(!store.state.privacy)
+        #expect(store.state.autoExposure)
+        #expect(store.state.exposureOrigin == Self.manual31)
+    }
+
+    @Test("Échec de l'activation : erreur uvcFailed au client qui l'a demandée, état « off »")
+    func activationFailureReachesClient() {
+        let controller = makeController()
+        _ = controller.handle(.autoExposure(on: true), from: 9)
+        runner.answer(.exposureStatus, .sdkError)
+        #expect(errors.values.count == 1)
+        #expect(errors.values.first?.0 == 9)
+        #expect(errors.values.first?.1 == .uvcFailed)
+        #expect(errors.values.first?.2 == ExposureFailureText.readFailed)
+        #expect(controller.snapshot.autoExposure == .off)
+    }
+}
+
+@MainActor
+@Suite("Contrôleur : exposition automatique et vie privée native (§ 6.11)")
+struct PTZControllerExposurePrivacyTests {
+    let camera = FakeCamera()
+    let scheduler = FakeScheduler()
+    let runner = FakeAIRunner()
+    let store = MemoryStateStore()
+    let log = LogRecorder()
+    let errors = ClientErrorBox()
+
+    private static let manual31 = ExposureSetting(shutter: 31, auto: false)
+    private static let auto31 = ExposureSetting(shutter: 31, auto: true)
+
+    init() {
+        runner.nativePrivacyAvailable = true
+        runner.attach(camera: camera, scheduler: scheduler)
+    }
+
+    private func makeController() -> PTZController {
+        let controller = PTZController(
+            camera: camera,
+            scheduler: scheduler,
+            ai: runner,
+            store: store,
+            settings: MotionSettings(),
+            isObsbotCenterRunning: { false },
+            log: log.sink
+        )
+        controller.onClientError = { [errors] in errors.values.append(($0, $1, $2)) }
+        return controller
+    }
+
+    /// Caméra branchée, suivi IA déjà coupé, utilitaire prêt : la vie privée prend le chemin rapide.
+    private func ready() -> PTZController {
+        camera.position = PanTiltPosition(pan: 12, tilt: 4)
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        _ = controller.handle(.aiTracking(on: false), from: 1)
+        runner.answer(.tracking(false))
+        return controller
+    }
+
+    private func enterNative(_ controller: PTZController) {
+        runner.autoReads = true
+        _ = controller.handle(.privacy(on: true), from: 1)
+        runner.answer(.privacy(true))
+        scheduler.advance(by: FakeAIRunner.descentTime + 0.1)
+    }
+
+    private func exitNative(_ controller: PTZController) {
+        runner.autoReads = true
+        _ = controller.handle(.privacy(on: false), from: 1)
+        runner.answer(.privacy(false))
+        scheduler.advance(by: FakeAIRunner.wakeStateTime + PrivacyReconciler.pollInterval + PrivacyReconciler.riseMargin)
+    }
+
+    @Test("C1 : vie privée native en service, l'interrupteur est publié mais aucun ordre n'est donné ; à la sortie, la lecture puis le réglage partent")
+    func noOrderUntilPrivacyEnds() {
+        let controller = ready()
+        enterNative(controller)
+        #expect(controller.snapshot.privacyMode == .native)
+        #expect(controller.handle(.autoExposure(on: true), from: 2) == nil)
+        #expect(controller.snapshot.autoExposure == .on)
+        scheduler.advance(by: 90)
+        #expect(runner.exposureReads == 0)
+        #expect(runner.exposureOrders.isEmpty)
+        #expect(!store.state.autoExposure)
+        #expect(runner.exposure == Self.manual31)
+        exitNative(controller)
+        #expect(!controller.snapshot.privacy)
+        #expect(runner.inFlight == .exposureStatus)
+        runner.answer(.exposureStatus)
+        runner.answer(.exposure(Self.auto31))
+        #expect(runner.exposure == Self.auto31)
+        #expect(controller.snapshot.autoExposure == .on)
+        #expect(errors.values.isEmpty)
+        #expect(runner.refused.isEmpty)
+    }
+
+    @Test("C1 : démarrage de ptzd (ou aiUpdated, rebranchement) en vie privée native avec l'exposition voulue : aucun ordre d'exposition avant la sortie")
+    func noReapplyWhilePrivacy() {
+        camera.position = PanTiltPosition(pan: 12, tilt: 4)
+        store.state = PersistedState(
+            privacy: true,
+            saved: SavedPosition(pan: 12, tilt: 4, zoom: 33),
+            native: true,
+            autoExposure: true,
+            exposureOrigin: Self.manual31
+        )
+        runner.state = .privacy
+        runner.autoReads = true
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        scheduler.advance(by: 30)
+        controller.aiUpdated()
+        scheduler.advance(by: 30)
+        // Rebranchement : la caméra a redémarré, éveillée et droite ; la vie privée reprend, l'exposition attend toujours.
+        controller.cameraPresenceChanged(false)
+        runner.powerCycle()
+        controller.cameraPresenceChanged(true)
+        for _ in 0..<300 {
+            while let order = runner.inFlight {
+                runner.answer(order)
+            }
+            scheduler.advance(by: 0.1)
+        }
+        #expect(controller.snapshot.privacy)
+        #expect(runner.exposureReads == 0)
+        #expect(runner.exposureOrders.isEmpty)
+        #expect(controller.snapshot.autoExposure == .on)
+        #expect(runner.refused.isEmpty)
+    }
+
+    @Test("I1 : entrée en vie privée pendant un ordre d'exposition lent : −70° tout de suite, puis le mode natif quand la file est libre")
+    func privacyEntryDuringSlowExposureOrder() {
+        let controller = ready()
+        #expect(controller.handle(.autoExposure(on: true), from: 2) == nil)
+        runner.answer(.exposureStatus)
+        // Le passage en automatique est parti et tarde à répondre.
+        #expect(runner.inFlight == .exposure(Self.auto31))
+        #expect(controller.handle(.privacy(on: true), from: 1) == nil)
+        // Le chemin rapide aurait attendu derrière lui : −70° part sans attendre.
+        #expect(camera.absoluteCommands == [PanTiltPosition(pan: 12, tilt: PrivacyReconciler.privacyTilt)])
+        #expect(log.lines.contains { $0.contains("chemin de repli") && $0.contains("ordre d'exposition en cours") })
+        #expect(runner.inFlight == .exposure(Self.auto31))
+        // Un ordre parti n'est pas interrompu ; sa réponse arrive, puis la vie privée native part.
+        runner.answer(.exposure(Self.auto31))
+        scheduler.advance(by: PrivacyReconciler.settleDelay + PrivacyReconciler.pollInterval)
+        #expect(runner.inFlight == .privacy(true))
+        runner.autoReads = true
+        runner.answer(.privacy(true))
+        scheduler.advance(by: FakeAIRunner.descentTime + 0.1)
+        #expect(controller.snapshot.privacyMode == .native)
+        // Aucun ordre d'exposition n'est parti vers la caméra endormie.
+        #expect(runner.exposureOrders == [Self.auto31])
+        #expect(runner.refused.isEmpty)
+        #expect(errors.values.isEmpty)
+    }
+
+    @Test("I1 : la vie privée voulue pendant la lecture d'exposition : le passage en automatique n'est jamais envoyé à la caméra endormie")
+    func queuedExposureOrderDroppedByPrivacy() {
+        let controller = ready()
+        #expect(controller.handle(.autoExposure(on: true), from: 2) == nil)
+        #expect(runner.inFlight == .exposureStatus)
+        #expect(controller.handle(.privacy(on: true), from: 1) == nil)
+        runner.answer(.exposureStatus)
+        runner.autoReads = true
+        for _ in 0..<100 {
+            while let order = runner.inFlight {
+                runner.answer(order)
+            }
+            scheduler.advance(by: 0.1)
+        }
+        #expect(controller.snapshot.privacy)
+        #expect(runner.exposureOrders.isEmpty)
+        #expect(runner.refused.isEmpty)
+        // Le choix reste publié ; à la sortie, la lecture repart.
+        #expect(controller.snapshot.autoExposure == .on)
+        exitNative(controller)
+        #expect(runner.exposureReads == 2)
+    }
+}
+
 /// Erreurs transmises par `onClientError` (tests).
 @MainActor
 final class ClientErrorBox {

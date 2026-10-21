@@ -117,6 +117,9 @@ public final class PrivacyReconciler {
     public var onChange: (() -> Void)?
     /// Un échec à montrer au client qui a demandé la vie privée (repli sur l'inclinaison, sortie impossible).
     public var onClientError: ((ClientID, ErrorCode, String) -> Void)?
+    /// La vie privée vient de finir (fin de la sortie, caméra lue éveillée ou jamais endormie) : l'exposition voulue peut
+    /// être réappliquée (spec § 6.11).
+    public var onEnded: (() -> Void)?
 
     // MARK: - État interne
 
@@ -654,6 +657,10 @@ public final class PrivacyReconciler {
         if stateUnreadable {
             return "état réel illisible"
         }
+        if runner.busyWithExposure {
+            // La vie privée passe devant les ordres d'exposition en attente, mais pas devant celui qui est parti.
+            return "ordre d'exposition en cours"
+        }
         if !runner.isReady {
             // Un ordre attendrait la session neuve du SDK (environ 4 s) : l'inclinaison protège tout de suite.
             return "SDK pas encore prêt"
@@ -1170,6 +1177,7 @@ public final class PrivacyReconciler {
         pendingTake = false
         persist()
         zoom.refresh()
+        onEnded?()
     }
 
     /// Sortie rapide (spec § 6.5 bis, « Accélération ») : la caméra vient d'être lue éveillée, nacelle immobile. Position
@@ -1330,7 +1338,13 @@ public final class PrivacyReconciler {
     /// Une erreur d'écriture n'empêche pas de protéger l'image : on la journalise.
     private func persist() {
         do {
-            try store.save(PersistedState(privacy: isActive, saved: saved, native: mayBeNative))
+            // Relit d'abord le fichier : l'exposition automatique y écrit aussi (spec § 6.11), ses champs ne doivent pas
+            // être effacés.
+            var state = store.load()
+            state.privacy = isActive
+            state.saved = saved
+            state.native = mayBeNative
+            try store.save(state)
         } catch {
             log("Enregistrement de state.json impossible : \(error)")
         }

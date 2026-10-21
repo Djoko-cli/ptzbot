@@ -3,6 +3,9 @@ import Testing
 @testable import PTZCore
 
 /// obsbot-ai simulé, fidèle au vrai `ResidentAIRunner` et à la vraie caméra (spec § 6.5 bis, mesures du 19/10) :
+/// - **l'exposition** (spec § 6.11) : un réglage simulé (`exposure`), que `exposure set` change quand il agit, et que
+///   `exposure status` lit (ou `exposureUnreadable`) ; une coupure d'alimentation (`powerCycle`) fait oublier le mode
+///   automatique à la caméra, comme le ferait un redémarrage ;
 /// - **un seul ordre à la fois** : un ordre donné pendant un autre est refusé tout de suite (`launchFailed`), comme le
 ///   vrai, et noté dans `refused` ;
 /// - la réponse arrive quand le test le décide : réussie, en échec, en retard, ou perdue (l'ordre agit sur la caméra,
@@ -26,11 +29,14 @@ final class FakeAIRunner: AIRunner {
         case tracking(Bool)
         case privacy(Bool)
         case status
+        case exposureStatus
+        case exposure(ExposureSetting)
     }
 
     private enum Completion {
         case result(@MainActor @Sendable (AIResult) -> Void)
         case reading(@MainActor @Sendable (PrivacyReading) -> Void)
+        case exposureReading(@MainActor @Sendable (ExposureReading) -> Void)
     }
 
     /// Délais mesurés sur la vraie caméra (19/10).
@@ -60,6 +66,10 @@ final class FakeAIRunner: AIRunner {
     var pitchUnreadable = false
     /// Les lectures de l'état répondent seules, tout de suite, avec l'état simulé.
     var autoReads = false
+    /// Réglage d'exposition simulé de la caméra : manuel, obturation 31 au départ (essai du 20/10).
+    var exposure = ExposureSetting(shutter: 31, auto: false)
+    /// `exposure status` ne sait pas lire le réglage : `err 2`.
+    var exposureUnreadable = false
     /// Vitesse de la remontée (degrés par seconde) : 87° en 1,1 s, mesuré le 19/10. Un test peut la ralentir (m4).
     var riseSpeed: Double = 80
 
@@ -105,6 +115,14 @@ final class FakeAIRunner: AIRunner {
     var privacyOrders: [Bool] {
         received.compactMap { if case let .privacy(on) = $0 { on } else { nil } }
     }
+    /// Ordres d'exposition reçus (`exposure set`), dans l'ordre.
+    var exposureOrders: [ExposureSetting] {
+        received.compactMap { if case let .exposure(setting) = $0 { setting } else { nil } }
+    }
+    /// Lectures du réglage d'exposition reçues.
+    var exposureReads: Int {
+        received.filter { $0 == .exposureStatus }.count
+    }
     /// Lectures de l'état réel reçues.
     var statusReads: Int {
         received.filter { $0 == .status }.count
@@ -136,6 +154,8 @@ final class FakeAIRunner: AIRunner {
         beforeNative = nil
         sessionOpen = false
         camera?.position = PanTiltPosition(pan: 0, tilt: 0)
+        // Le redémarrage fait oublier à la caméra le mode automatique (le gain et l'obturation restent).
+        exposure.auto = false
     }
 
     /// L'utilitaire s'est arrêté après son délai d'inactivité : la session est fermée, le SDK n'est plus prêt ; le
@@ -162,6 +182,14 @@ final class FakeAIRunner: AIRunner {
         if autoReads, current?.order == .status {
             respond(.success, effect: false)
         }
+    }
+
+    func readExposure(completion: @escaping @MainActor @Sendable (ExposureReading) -> Void) {
+        accept(.exposureStatus, .exposureReading(completion))
+    }
+
+    func runExposure(_ setting: ExposureSetting, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        accept(.exposure(setting), .result(completion))
     }
 
     func prewarm() {
@@ -227,6 +255,7 @@ final class FakeAIRunner: AIRunner {
             switch completion {
             case let .result(done): done(refusal)
             case let .reading(done): done(.failed(refusal, pitch: nil))
+            case let .exposureReading(done): done(.failed(refusal))
             }
             return
         }
@@ -245,7 +274,7 @@ final class FakeAIRunner: AIRunner {
         switch result {
         case .timeout, .unknownOrder:
             sessionOpen = false
-        case .sdkError where pending.order != .status:
+        case .sdkError where pending.order != .status && pending.order != .exposureStatus:
             sessionOpen = false
         case .launchFailed:
             break
@@ -254,6 +283,9 @@ final class FakeAIRunner: AIRunner {
         }
         if effect, case let .privacy(on) = pending.order {
             move(toPrivacy: on)
+        }
+        if effect, case let .exposure(setting) = pending.order {
+            exposure = setting
         }
         switch pending.completion {
         case let .result(done):
@@ -265,6 +297,12 @@ final class FakeAIRunner: AIRunner {
                 done(.failed(.sdkError, pitch: pitch))
             } else {
                 done(.failed(result, pitch: nil))
+            }
+        case let .exposureReading(done):
+            if result == .success, !exposureUnreadable {
+                done(.setting(exposure))
+            } else {
+                done(.failed(result == .success ? .sdkError : result))
             }
         }
     }

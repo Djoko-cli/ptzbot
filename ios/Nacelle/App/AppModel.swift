@@ -327,6 +327,23 @@ final class AppModel {
         ptz.setAITracking(!aiTrackingOn)
     }
 
+    /// L'exposition automatique est voulue (spec § 6.11).
+    var autoExposureOn: Bool {
+        ptz.state?.autoExposure == .on
+    }
+
+    /// Bouton d'exposition automatique utilisable : connecté, caméra présente, et ptzd tient l'ordre (SDK là, obsbot-ai à
+    /// jour). Un ptzd d'avant l'exposition automatique ne publie rien : grisé. Utilisable pendant la vie privée.
+    var autoExposureToggleEnabled: Bool {
+        guard ptz.link == .connected, let state = ptz.state, state.camera == .connected else { return false }
+        return state.autoExposure == .on || state.autoExposure == .off
+    }
+
+    /// Active l'exposition automatique si elle ne l'est pas, la désactive sinon (retour au réglage d'avant).
+    func toggleAutoExposure() {
+        ptz.setAutoExposure(!autoExposureOn)
+    }
+
     /// Bouton vie privée utilisable : connecté et caméra présente.
     var privacyToggleEnabled: Bool {
         ptz.link == .connected && ptz.state?.camera == .connected

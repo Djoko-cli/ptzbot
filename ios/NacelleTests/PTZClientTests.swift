@@ -346,6 +346,14 @@ struct PTZClientTests {
         #expect(commands(tailscale).suffix(2) == [.aiTracking(on: true), .aiTracking(on: false)])
     }
 
+    @Test("Exposition auto : l'ordre part sur la connexion active")
+    func autoExposureOrder() throws {
+        try connect()
+        client.setAutoExposure(true)
+        client.setAutoExposure(false)
+        #expect(commands(tailscale).suffix(2) == [.autoExposure(on: true), .autoExposure(on: false)])
+    }
+
     @Test("Aucun Mac ne répond avec le QR (secret refusé en TLS, Mac injoignable) : « QR code refusé », sans reconnexion")
     func pairingUnanswered() throws {
         keys.key = nil

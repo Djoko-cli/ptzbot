@@ -1,3 +1,4 @@
+import NacelleProtocol
 import SwiftUI
 
 /// L'écran unique : la vidéo en plein écran, les commandes par-dessus (spec § 7.2 et § 7.3).
@@ -10,7 +11,14 @@ struct ControlScreen: View {
         model.ptz.state?.privacy ?? false
     }
 
-    /// En portrait (hauteur « regular »), la rangée du haut tient tout juste ses cinq boutons : le bandeau et le badge
+    /// Nombre de boutons ronds de la rangée du haut, à droite de la roue : son, suivi IA, exposition auto, rec, vie privée.
+    private static let rightButtonCount = 5
+    /// Largeur du groupe de droite plus un écart, et de la roue à gauche plus un écart : les marges du badge et du bandeau
+    /// en paysage.
+    private static let rightGroupMargin = CGFloat(rightButtonCount) * 44 + CGFloat(rightButtonCount - 1) * 10 + 12
+    private static let leftWheelMargin: CGFloat = 44 + 12
+
+    /// En portrait (hauteur « regular »), la rangée du haut tient tous ses boutons : le bandeau et le badge
     /// d'enregistrement passent chacun sur leur ligne en dessous. En paysage, ils restent dans la rangée.
     private var bannerOnOwnRow: Bool {
         verticalSizeClass == .regular
@@ -24,6 +32,18 @@ struct ControlScreen: View {
     /// Le bouton rec, en mode épuré : visible seulement pendant un enregistrement ou sa sauvegarde.
     private var recordButtonShown: Bool {
         !clean || model.recording != .idle
+    }
+
+    /// Le badge d'enregistrement et le bandeau, côte à côte (paysage).
+    private var landscapeStatusRow: some View {
+        HStack(spacing: 10) {
+            if case let .recording(since) = model.recording {
+                RecordingBadge(since: since)
+            }
+            if let banner {
+                banner
+            }
+        }
     }
 
     private var banner: BannerView? {
@@ -62,6 +82,9 @@ struct ControlScreen: View {
                                 .hiddenInCleanFeed(clean)
                             aiButton
                                 .hiddenInCleanFeed(clean)
+                            // Juste à côté du bouton rec, de la même famille (spec § 6.11).
+                            exposureButton
+                                .hiddenInCleanFeed(clean)
                             recordButton
                                 .hiddenInCleanFeed(!recordButtonShown)
                             privacyButton
@@ -69,18 +92,18 @@ struct ControlScreen: View {
                         }
                     }
                     // Paysage : le badge d'enregistrement et le bandeau, centrés sur toute la largeur de l'écran (et non
-                    // entre la roue et les quatre boutons). La marge de chaque côté vaut la largeur du groupe de droite
-                    // (4 × 44 + 3 × 10 points) plus un écart : ils ne recouvrent jamais un bouton.
+                    // entre la roue et les cinq boutons). La marge de chaque côté vaut la largeur du groupe de droite
+                    // (5 × 44 + 4 × 10 points) plus un écart : ils ne recouvrent jamais un bouton. Quand la place manque
+                    // (iPhone SE ou mini), ils se centrent dans l'espace libre entre la roue et les boutons, plus large
+                    // que sous deux marges égales.
                     if !bannerOnOwnRow {
-                        HStack(spacing: 10) {
-                            if case let .recording(since) = model.recording {
-                                RecordingBadge(since: since)
-                            }
-                            if let banner {
-                                banner
-                            }
+                        ViewThatFits(in: .horizontal) {
+                            landscapeStatusRow
+                                .padding(.horizontal, Self.rightGroupMargin)
+                            landscapeStatusRow
+                                .padding(.leading, Self.leftWheelMargin)
+                                .padding(.trailing, Self.rightGroupMargin)
                         }
-                        .padding(.horizontal, 4 * 44 + 3 * 10 + 12)
                     }
                 }
                 // Portrait : le bandeau, centré sur sa ligne, au-dessus du badge.
@@ -201,6 +224,45 @@ struct ControlScreen: View {
         .accessibilityLabel(model.aiTrackingBusy ? "Suivi IA en cours de changement" : model.aiTrackingOn ? "Couper le suivi IA" : "Allumer le suivi IA")
     }
 
+    /// Le fond des boutons ronds qui peuvent être « actifs » (rec, vie privée, exposition auto) : la matière quand ils sont
+    /// inactifs, une couleur quand ils sont actifs (rouge par défaut, jaune soleil pour l'exposition). Un seul style, pour
+    /// que ces boutons restent de la même famille.
+    private func activeBackground(_ active: Bool, color: Color = .red) -> AnyShapeStyle {
+        active ? AnyShapeStyle(color.opacity(0.8)) : AnyShapeStyle(.ultraThinMaterial)
+    }
+
+    /// Exposition automatique (spec § 6.11) : même forme, même taille et même style d'état actif et inactif que le bouton
+    /// rec. Grisé sans connexion, sans caméra, sans SDK sur le Mac ou avec un ptzd ancien ; utilisable en vie privée.
+    private var exposureButton: some View {
+        Button {
+            model.toggleAutoExposure()
+        } label: {
+            Image(systemName: model.autoExposureOn ? "sun.max.fill" : "sun.max")
+                .font(.title3)
+                .frame(width: 44, height: 44)
+                .background(activeBackground(model.autoExposureOn, color: .yellow), in: Circle())
+        }
+        // Jaune soleil quand l'exposition auto est active (et non le rouge de l'enregistrement) : l'icône passe au noir sur
+        // ce fond clair, lisible en mode clair comme en mode sombre ; blanche sur la matière quand elle est inactive.
+        .foregroundStyle(model.autoExposureOn ? Color.black : Color.white)
+        .disabled(!model.autoExposureToggleEnabled)
+        .opacity(model.autoExposureToggleEnabled ? 1 : 0.4)
+        .accessibilityLabel("Exposition auto")
+        .accessibilityValue(model.autoExposureOn ? "activée" : "désactivée")
+        .accessibilityHint(Self.autoExposureHint(model.ptz.state?.autoExposure))
+    }
+
+    /// L'indication VoiceOver du bouton d'exposition automatique, selon ce que ptzd publie : ce que fait le bouton, ou
+    /// pourquoi il est grisé.
+    nonisolated static func autoExposureHint(_ exposure: AutoExposure?) -> String {
+        switch exposure {
+        case .on: "Désactive l'exposition automatique et remet le réglage d'avant"
+        case .off: "Laisse la caméra régler elle-même l'exposition"
+        case .unavailable: "Indisponible : demande le SDK OBSBOT sur le Mac"
+        case nil: "Indisponible : demande une mise à jour de PTZBot sur le Mac"
+        }
+    }
+
     private var isRecording: Bool {
         if case .recording = model.recording { true } else { false }
     }
@@ -227,7 +289,7 @@ struct ControlScreen: View {
                 }
             }
             .frame(width: 44, height: 44)
-            .background(isRecording ? AnyShapeStyle(.red.opacity(0.8)) : AnyShapeStyle(.ultraThinMaterial), in: Circle())
+            .background(activeBackground(isRecording), in: Circle())
         }
         .foregroundStyle(.white)
         .disabled(!model.recordToggleEnabled)
@@ -242,7 +304,7 @@ struct ControlScreen: View {
             Image(systemName: privacyOn ? "eye.slash.fill" : "eye.fill")
                 .font(.title3)
                 .frame(width: 44, height: 44)
-                .background(privacyOn ? AnyShapeStyle(.red.opacity(0.8)) : AnyShapeStyle(.ultraThinMaterial), in: Circle())
+                .background(activeBackground(privacyOn), in: Circle())
         }
         .foregroundStyle(.white)
         .disabled(!model.privacyToggleEnabled)

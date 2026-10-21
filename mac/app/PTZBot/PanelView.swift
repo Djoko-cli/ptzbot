@@ -281,6 +281,20 @@ struct PanelView: View {
                     .font(.caption)
                 }
             }
+            Divider()
+            // Exposition automatique (spec § 6.11) : utilisable pendant la vie privée (le choix est retenu, l'ordre part à sa
+            // sortie), grisée sans SDK.
+            PanelRow(icon: Labels.exposureIcon, title: AppText.text("Exposition auto")) {
+                Toggle(AppText.text("Exposition auto"), isOn: Binding(get: { model.state?.autoExposure == .on }, set: { model.setAutoExposure($0) }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .disabled(!Labels.exposureEnabled(model.state?.autoExposure, needsSDK: aiNeedsSDK))
+            } notes: {
+                if let note = Labels.exposureNote(model.state?.autoExposure, needsSDK: aiNeedsSDK) {
+                    PanelNote(note)
+                }
+            }
         } notes: {
             if let error = model.lastError {
                 PanelNote(error, color: .red)

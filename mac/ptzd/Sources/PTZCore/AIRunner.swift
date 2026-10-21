@@ -44,12 +44,33 @@ public enum PrivacyReading: Equatable, Sendable {
     case failed(AIResult, pitch: Double? = nil)
 }
 
-/// Un ordre de l'utilitaire : le suivi IA, la vie privée native de la caméra, ou la lecture de son état réel
-/// (spec § 6.5 bis).
+/// Réglage d'exposition de la caméra : l'obturation et le mode (spec § 6.11). Pour la Tiny 2, c'est tout ce que le SDK lit
+/// et écrit (`cameraGetExposureAbsolute`, `cameraSetExposureAbsolute`) ; le gain reste celui d'OBSBOT Center.
+public struct ExposureSetting: Codable, Equatable, Sendable {
+    public var shutter: Int
+    /// Exposition automatique en vigueur (true), ou réglage manuel (false).
+    public var auto: Bool
+
+    public init(shutter: Int, auto: Bool) {
+        self.shutter = shutter
+        self.auto = auto
+    }
+}
+
+/// Issue d'une lecture du réglage d'exposition : le réglage lu, ou l'échec de l'ordre.
+public enum ExposureReading: Equatable, Sendable {
+    case setting(ExposureSetting)
+    case failed(AIResult)
+}
+
+/// Un ordre de l'utilitaire : le suivi IA, la vie privée native de la caméra, la lecture de son état réel
+/// (spec § 6.5 bis), ou l'exposition (spec § 6.11).
 enum AIOrder: Equatable, Sendable {
     case tracking(on: Bool)
     case privacy(on: Bool)
     case privacyStatus
+    case exposureStatus
+    case exposure(ExposureSetting)
 
     /// La ligne écrite sur l'entrée de `obsbot-ai serve`.
     var line: String {
@@ -57,12 +78,14 @@ enum AIOrder: Equatable, Sendable {
         case let .tracking(on): on ? "on" : "off"
         case let .privacy(on): on ? "privacy on" : "privacy off"
         case .privacyStatus: "privacy status"
+        case .exposureStatus: "exposure status"
+        case let .exposure(setting): "exposure set \(setting.shutter) \(setting.auto ? "auto" : "manual")"
         }
     }
 }
 
-/// Allume (`on`) ou coupe le suivi IA de la caméra, lui fait entrer ou quitter sa vie privée native, et lit son état
-/// réel. L'utilitaire ne traite qu'un ordre à la fois : un ordre donné pendant un autre est refusé
+/// Allume (`on`) ou coupe le suivi IA de la caméra, lui fait entrer ou quitter sa vie privée native, lit son état
+/// réel, et règle son exposition. L'utilitaire ne traite qu'un ordre à la fois : un ordre donné pendant un autre est refusé
 /// (`launchFailed`) ; `AIOrderQueue` les met à la file.
 @MainActor
 public protocol AIRunner: AnyObject {
@@ -71,11 +94,18 @@ public protocol AIRunner: AnyObject {
     func runPrivacy(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void)
     /// Lit l'état réel de la caméra (`privacy status`, spec § 6.5 bis).
     func readPrivacy(completion: @escaping @MainActor @Sendable (PrivacyReading) -> Void)
+    /// Lit le réglage d'exposition de la caméra (`exposure status`, spec § 6.11).
+    func readExposure(completion: @escaping @MainActor @Sendable (ExposureReading) -> Void)
+    /// Applique un réglage d'exposition (`exposure set`, spec § 6.11). Même contrat que `run`.
+    func runExposure(_ setting: ExposureSetting, completion: @escaping @MainActor @Sendable (AIResult) -> Void)
     /// L'utilitaire existe : sans lui (pas de SDK), la vie privée se limite à l'inclinaison de l'objectif.
     var supportsNativePrivacy: Bool { get }
     /// Le SDK est prêt : l'utilitaire tourne et sa session a trouvé la caméra (« ready »). Un ordre part alors en
     /// quelques millisecondes ; sinon il attend une session neuve, environ 4 s (spec § 6.5 bis, « Accélération »).
     var isReady: Bool { get }
+    /// Un ordre d'exposition est en cours (file des ordres, spec § 6.11) : la vie privée passerait derrière lui, `isReady`
+    /// est faux et l'entrée prend le repli.
+    var busyWithExposure: Bool { get }
     /// L'utilitaire reste chargé tant que ptzd tourne (ptzd lancé avec le SDK, spec § 6.9) : il n'est plus arrêté pour
     /// inactivité, et ptzd le prépare dès le démarrage, au branchement de la caméra et après une mise à jour.
     var keepsWarm: Bool { get }
@@ -95,7 +125,14 @@ extension AIRunner {
     public func readPrivacy(completion: @escaping @MainActor @Sendable (PrivacyReading) -> Void) {
         completion(.failed(.launchFailed("vie privée native indisponible"), pitch: nil))
     }
+    public func readExposure(completion: @escaping @MainActor @Sendable (ExposureReading) -> Void) {
+        completion(.failed(.launchFailed("exposition indisponible")))
+    }
+    public func runExposure(_ setting: ExposureSetting, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
+        completion(.launchFailed("exposition indisponible"))
+    }
     public var supportsNativePrivacy: Bool { false }
     public var isReady: Bool { false }
+    public var busyWithExposure: Bool { false }
     public var keepsWarm: Bool { false }
 }

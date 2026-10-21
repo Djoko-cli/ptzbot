@@ -14,7 +14,7 @@ public struct SavedPosition: Codable, Equatable, Sendable {
     }
 }
 
-/// Contenu de state.json (spec § 6.5 et § 6.5 bis).
+/// Contenu de state.json (spec § 6.5, § 6.5 bis et § 6.11).
 public struct PersistedState: Codable, Equatable, Sendable {
     /// La vie privée est en vigueur : de l'entrée demandée par l'utilisateur jusqu'à la fin de la sortie (position
     /// rétablie). Une coupure de ptzd en cours de sortie la réapplique : c'est le côté sûr.
@@ -24,15 +24,28 @@ public struct PersistedState: Codable, Equatable, Sendable {
     /// La caméra peut être en mode natif : dernier état réel constaté `privacy`, ou ordre natif parti sans lecture
     /// depuis. Tant qu'il est vrai, ptzd n'envoie aucun ordre de position avant d'avoir lu l'état réel.
     public var native: Bool
+    /// L'exposition automatique est voulue (spec § 6.11) : réappliquée au démarrage, au rebranchement et après `aiUpdated`.
+    public var autoExposure: Bool
+    /// Le réglage d'exposition lu juste avant l'activation, remis à la désactivation. Écrit avant de passer en
+    /// automatique ; nil hors exposition automatique (et, par un fichier abîmé, quand elle est voulue sans origine).
+    public var exposureOrigin: ExposureSetting?
 
-    public init(privacy: Bool, saved: SavedPosition?, native: Bool = false) {
+    public init(
+        privacy: Bool,
+        saved: SavedPosition?,
+        native: Bool = false,
+        autoExposure: Bool = false,
+        exposureOrigin: ExposureSetting? = nil
+    ) {
         self.privacy = privacy
         self.saved = saved
         self.native = native
+        self.autoExposure = autoExposure
+        self.exposureOrigin = exposureOrigin
     }
 
     private enum CodingKeys: String, CodingKey {
-        case privacy, saved, native
+        case privacy, saved, native, autoExposure, exposureOrigin
         /// Le champ du premier prototype de la vie privée V2 (`native` ou `tilt`), lu seulement.
         case mode
     }
@@ -48,6 +61,9 @@ public struct PersistedState: Codable, Equatable, Sendable {
             // premier prototype a `mode` : `native` y voulait dire « ordre natif donné », donc peut-être en mode natif.
             native = (try? c.decodeIfPresent(String.self, forKey: .mode)) == "native"
         }
+        // Absents d'un fichier d'avant l'exposition automatique ; illisibles, ils se lisent « désactivée » / sans origine.
+        autoExposure = (try? c.decodeIfPresent(Bool.self, forKey: .autoExposure)) ?? false
+        exposureOrigin = try? c.decodeIfPresent(ExposureSetting.self, forKey: .exposureOrigin)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -55,6 +71,11 @@ public struct PersistedState: Codable, Equatable, Sendable {
         try c.encode(privacy, forKey: .privacy)
         try c.encodeIfPresent(saved, forKey: .saved)
         try c.encode(native, forKey: .native)
+        // Seulement s'ils servent : le fichier reste identique à celui de la 1.1.1 hors exposition automatique.
+        if autoExposure {
+            try c.encode(true, forKey: .autoExposure)
+        }
+        try c.encodeIfPresent(exposureOrigin, forKey: .exposureOrigin)
     }
 }
 
