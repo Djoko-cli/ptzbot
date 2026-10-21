@@ -15,6 +15,7 @@ version GitHub et à la fenêtre de mise à jour.
 - It goes through the OBSBOT SDK: without it, the switch is greyed out, with a note. It stays usable while privacy mode is on: your choice is kept and shown at once, but nothing is sent to the camera until privacy mode ends, so a sleeping camera is never woken.
 - For the iPhone app to show the button, update PTZBot on the Mac first: with an older PTZBot, the button stays greyed out.
 - Before going back to 1.1.x, turn auto exposure off: an older PTZBot does not know the setting to put back, and the camera would stay in auto exposure.
+- **Pinch to zoom on the video (iPhone app).** Pinch with two fingers on the picture to zoom from 1× to 8×, centred between your fingers; once zoomed, slide one or two fingers to move around the picture, which never leaves the screen (with one finger on the whole picture, nothing moves); double-tap to come back to the whole picture. It only zooms the display: nothing is sent to the camera, so HomeKit, recordings and the Mac are unaffected. A small "2.4×" appears while you pinch, then fades. The joystick and the tap that hides the controls are unchanged (a tap is not a slide), except that the tap now waits a fraction of a second to tell it from a double-tap. The zoom goes back to 1× when the iPhone is turned or the app goes to the background; it stays as it is during privacy mode. With VoiceOver, the picture has a "Revenir à l'image entière" action.
 
 **Français**
 
@@ -23,6 +24,7 @@ version GitHub et à la fenêtre de mise à jour.
 - Elle passe par le SDK OBSBOT : sans lui, l'interrupteur est grisé, avec une note. Il reste utilisable pendant la vie privée : votre choix est retenu et affiché tout de suite, mais rien n'est envoyé à la caméra avant la fin de la vie privée, pour ne jamais réveiller une caméra endormie.
 - Pour que l'app iPhone affiche le bouton, mettez d'abord PTZBot à jour sur le Mac : avec un PTZBot plus ancien, le bouton reste grisé.
 - Avant de revenir à une 1.1.x, désactivez l'exposition auto : un PTZBot plus ancien ne connaît pas le réglage à remettre, et la caméra resterait en exposition automatique.
+- **Pincer pour zoomer sur la vidéo (app iPhone).** Pincez l'image à deux doigts pour zoomer de 1× à 8×, centré entre vos doigts ; une fois zoomé, glissez à un ou deux doigts pour vous déplacer dans l'image, qui ne sort jamais de l'écran (à un doigt sur l'image entière, rien ne bouge) ; touchez deux fois pour revenir à l'image entière. Seul l'affichage est zoomé : rien n'est envoyé à la caméra, donc HomeKit, les enregistrements et le Mac ne changent pas. Un petit « 2,4× » apparaît pendant le geste, puis s'efface. Le joystick et le tap qui masque les commandes ne changent pas (un tap n'est pas un glissement), sauf que ce tap attend désormais une fraction de seconde pour se distinguer d'un double tap. Le zoom revient à 1× quand l'iPhone change d'orientation ou que l'app passe en arrière-plan ; il reste tel quel pendant la vie privée. Avec VoiceOver, l'image propose l'action « Revenir à l'image entière ».
 
 ## 1.1.1
 

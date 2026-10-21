@@ -58,18 +58,14 @@ struct ControlScreen: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            VideoView(session: model.video)
-                .ignoresSafeArea()
-            // Un tap sur la vidéo nue masque ou rend l'interface. Sous les commandes : le joystick, le zoom et les
-            // boutons gardent leurs propres gestes.
-            Color.clear
-                .contentShape(Rectangle())
-                .ignoresSafeArea()
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.25)) { model.toggleCleanFeed() }
-                }
-                .accessibilityLabel(clean ? "Afficher les commandes" : "Masquer les commandes")
-                .accessibilityAddTraits(.isButton)
+            // La vidéo, son zoom d'affichage (pincer, glisser à un ou deux doigts, double tap) et le tap sur la vidéo nue,
+            // qui masque ou rend l'interface. Sous les commandes : le joystick, le zoom et les boutons gardent leurs
+            // propres gestes.
+            ZoomableVideoView(
+                session: model.video,
+                tapLabel: clean ? "Afficher les commandes" : "Masquer les commandes",
+                onTap: { withAnimation(.easeInOut(duration: 0.25)) { model.toggleCleanFeed() } }
+            )
             VStack {
                 ZStack(alignment: .top) {
                     // Masqués sans quitter la mise en page : le bouton rec garde sa place en mode épuré.
