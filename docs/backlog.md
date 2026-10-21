@@ -43,6 +43,8 @@ Pendant un enregistrement (bouton rec de l'app iOS), ajouter à la vidéo la voi
 
 ## Pincer pour zoomer sur la vidéo (app iOS)
 
+**Statut :** fait (21/10/2026), dans la 1.2.0 : zoom de l'affichage jusqu'à 8×, déplacement à un doigt (image zoomée) ou deux doigts, double tap pour revenir à 1×, indicateur du facteur.
+
 Un geste de pincement à deux doigts sur la vidéo pour zoomer **l'affichage seul**, sur l'iPhone (décision de Majid le 09/10) : un zoom numérique de la vue, sans ordre à la caméra, donc sans effet sur HomeKit ni sur les enregistrements. Avec un glissement à deux doigts pour se déplacer dans l'image zoomée, et un double tap pour revenir à l'image entière. Sans conflit avec le joystick ni avec le tap du mode épuré.
 
 ## Échec périmé dans l'état de talkd (relecture finale du 12/10, M1)
