@@ -234,25 +234,17 @@ struct PanelView: View {
 
     private var cameraSection: some View {
         PanelSection(Labels.cameraSection(model.state?.camera)) {
-            PanelRow(icon: "eye.slash", title: AppText.text("Vie privée"), subtitle: privacySubtitle) {
-                Toggle(AppText.text("Vie privée"), isOn: Binding(get: { model.state?.privacy ?? false }, set: { model.setPrivacy($0) }))
+            // Exposition automatique (spec § 6.11) : utilisable pendant la vie privée (le choix est retenu, l'ordre part à sa
+            // sortie), grisée sans SDK.
+            PanelRow(icon: Labels.exposureIcon, title: AppText.text("Exposition auto")) {
+                Toggle(AppText.text("Exposition auto"), isOn: Binding(get: { model.state?.autoExposure == .on }, set: { model.setAutoExposure($0) }))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
+                    .disabled(!Labels.exposureEnabled(model.state?.autoExposure, needsSDK: aiNeedsSDK))
             } notes: {
-                // Mode `tilt` : l'objectif est détourné, mais l'image et le micro ne sont pas coupés ; la raison vient de
-                // ptzd (spec § 6.5 bis).
-                let mode = model.state?.privacyMode
-                let reason = model.state?.privacyReason
-                if let note = Labels.privacyNote(mode: mode, reason: reason, sdk: legacy ? nil : app.sdkStatus) {
-                    PanelNote(note, color: .orange)
-                }
-                if !legacy, Labels.privacyNeedsTools(mode: mode, reason: reason, sdk: app.sdkStatus) {
-                    Button(Labels.installTools) {
-                        app.installDeveloperTools()
-                    }
-                    .buttonStyle(.link)
-                    .font(.caption)
+                if let note = Labels.exposureNote(model.state?.autoExposure, needsSDK: aiNeedsSDK) {
+                    PanelNote(note)
                 }
             }
             Divider()
@@ -282,17 +274,25 @@ struct PanelView: View {
                 }
             }
             Divider()
-            // Exposition automatique (spec § 6.11) : utilisable pendant la vie privée (le choix est retenu, l'ordre part à sa
-            // sortie), grisée sans SDK.
-            PanelRow(icon: Labels.exposureIcon, title: AppText.text("Exposition auto")) {
-                Toggle(AppText.text("Exposition auto"), isOn: Binding(get: { model.state?.autoExposure == .on }, set: { model.setAutoExposure($0) }))
+            PanelRow(icon: "eye.slash", title: AppText.text("Vie privée"), subtitle: privacySubtitle) {
+                Toggle(AppText.text("Vie privée"), isOn: Binding(get: { model.state?.privacy ?? false }, set: { model.setPrivacy($0) }))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                    .disabled(!Labels.exposureEnabled(model.state?.autoExposure, needsSDK: aiNeedsSDK))
             } notes: {
-                if let note = Labels.exposureNote(model.state?.autoExposure, needsSDK: aiNeedsSDK) {
-                    PanelNote(note)
+                // Mode `tilt` : l'objectif est détourné, mais l'image et le micro ne sont pas coupés ; la raison vient de
+                // ptzd (spec § 6.5 bis).
+                let mode = model.state?.privacyMode
+                let reason = model.state?.privacyReason
+                if let note = Labels.privacyNote(mode: mode, reason: reason, sdk: legacy ? nil : app.sdkStatus) {
+                    PanelNote(note, color: .orange)
+                }
+                if !legacy, Labels.privacyNeedsTools(mode: mode, reason: reason, sdk: app.sdkStatus) {
+                    Button(Labels.installTools) {
+                        app.installDeveloperTools()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
                 }
             }
         } notes: {
