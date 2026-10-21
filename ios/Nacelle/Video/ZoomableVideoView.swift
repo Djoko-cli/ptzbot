@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// La vidéo plein écran avec son zoom d'affichage seul (pincer, glisser à deux doigts, double tap) et le tap simple qui
-/// masque ou rend l'interface. Les décisions sont dans `VideoZoom` ; ici, seulement le branchement des gestes, de l'image
-/// et de l'indicateur.
+/// La vidéo plein écran avec son zoom d'affichage seul (pincer, glisser à un ou deux doigts, double tap) et le tap
+/// simple qui masque ou rend l'interface. Les décisions sont dans `VideoZoom` ; ici, seulement le branchement des gestes,
+/// de l'image et de l'indicateur.
 struct ZoomableVideoView: View {
     let session: VideoSession
     /// Ce que fait le tap simple, pour VoiceOver (« Masquer les commandes » ou « Afficher les commandes »).
@@ -36,6 +36,7 @@ struct ZoomableVideoView: View {
                     onPinch: { factor, anchor, viewSize in
                         zoom.pinch(by: factor, around: anchor, viewSize: viewSize, videoSize: videoSize)
                     },
+                    acceptsPan: { zoom.acceptsPan(touchCount: $0) },
                     onPan: { translation, viewSize in
                         zoom.pan(by: translation, viewSize: viewSize, videoSize: videoSize)
                     },

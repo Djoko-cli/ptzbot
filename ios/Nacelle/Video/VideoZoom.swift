@@ -1,6 +1,6 @@
 import CoreGraphics
 
-/// Le zoom numérique de l'affichage (backlog « Pincer pour zoomer ») : un agrandissement de la vue, de 1× à 4×, et le
+/// Le zoom numérique de l'affichage (backlog « Pincer pour zoomer ») : un agrandissement de la vue, de 1× à 8×, et le
 /// décalage de l'image agrandie. Aucun ordre n'est envoyé à la caméra : ni HomeKit, ni les enregistrements, ni le Mac ne
 /// le voient. La logique est pure (sans UIKit) ; la vue qui l'affiche reste mince.
 ///
@@ -8,7 +8,7 @@ import CoreGraphics
 /// celui de la vue. L'agrandissement et le décalage se règlent donc indépendamment, et l'on garde le point sous les doigts.
 struct VideoZoom: Equatable, Sendable {
     static let minScale: CGFloat = 1
-    static let maxScale: CGFloat = 4
+    static let maxScale: CGFloat = 8
 
     /// Le facteur d'agrandissement, de `minScale` à `maxScale`.
     private(set) var scale: CGFloat = 1
@@ -20,7 +20,7 @@ struct VideoZoom: Equatable, Sendable {
         scale > Self.minScale
     }
 
-    /// Pincement : multiplie le facteur par `factor` (borné à 1×–4×) en gardant fixe, sous les doigts, le point de l'image
+    /// Pincement : multiplie le facteur par `factor` (borné à 1×–8×) en gardant fixe, sous les doigts, le point de l'image
     /// en `anchor` (coordonnées de la vue). Appelé par petits pas : `factor` est le rapport depuis l'appel précédent.
     mutating func pinch(by factor: CGFloat, around anchor: CGPoint, viewSize: CGSize, videoSize: CGSize) {
         guard factor.isFinite, factor > 0, Self.isUsable(viewSize) else { return }
@@ -36,7 +36,13 @@ struct VideoZoom: Equatable, Sendable {
         clampOffset(viewSize: viewSize, videoSize: videoSize)
     }
 
-    /// Glissement à deux doigts : déplace l'image agrandie de `translation` (points d'écran), sans jamais en sortir.
+    /// Un glissement de `touchCount` doigts doit-il déplacer l'image ? Deux doigts, toujours (ils accompagnent le pincement,
+    /// qui part de 1×) ; un seul doigt, seulement quand l'image est agrandie : à 1× il n'y a rien à déplacer.
+    func acceptsPan(touchCount: Int) -> Bool {
+        touchCount >= 2 || (touchCount == 1 && isZoomed)
+    }
+
+    /// Glissement à un ou deux doigts : déplace l'image agrandie de `translation` (points d'écran), sans jamais en sortir.
     mutating func pan(by translation: CGSize, viewSize: CGSize, videoSize: CGSize) {
         guard Self.isUsable(viewSize), translation.width.isFinite, translation.height.isFinite else { return }
         offset = CGSize(width: offset.width + translation.width, height: offset.height + translation.height)

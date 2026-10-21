@@ -3,15 +3,17 @@ import UIKit
 
 /// La surface de gestes posée sur la vidéo : un seul `UIView` transparent qui range les doigts entre le zoom et le tap.
 ///
-/// Pourquoi UIKit : SwiftUI n'a pas de glissement « à deux doigts exactement » (`DragGesture` part dès un doigt, et se
-/// disputerait le toucher avec le tap du mode épuré), ni de moyen simple de dire qu'un tap simple attend l'échec d'un
-/// double tap. Ici :
-/// - pincement et glissement à deux doigts (exactement deux) se reconnaissent ensemble, donc on zoome et on déplace d'un
-///   même mouvement ;
+/// Pourquoi UIKit : SwiftUI ne sait pas faire reconnaître ensemble un pincement et un glissement dont on règle le nombre
+/// de doigts (`DragGesture` se disputerait le toucher avec le tap du mode épuré), ni dire qu'un tap simple attend
+/// l'échec d'un double tap. Ici :
+/// - pincement et glissement se reconnaissent ensemble, donc on zoome et on déplace d'un même mouvement ;
+/// - le glissement se fait à un ou deux doigts : à deux, toujours ; à un seul, seulement quand l'image est agrandie (à 1×
+///   il n'y a rien à déplacer, et le doigt seul ne fait rien) ;
 /// - le double tap revient à l'image entière ;
 /// - le tap simple (masquer ou rendre l'interface) attend que le double tap échoue, donc un double tap ne le déclenche pas.
 /// Le joystick, le curseur de zoom et les boutons sont des vues SwiftUI posées au-dessus : un toucher qui commence sur eux
-/// n'arrive jamais ici, et leurs gestes à un doigt ne sont pas ceux d'ici.
+/// n'arrive jamais ici ; et un tap n'est pas un glissement (le tap tient en place, le glissement commence après un
+/// déplacement de quelques points).
 struct VideoGestureSurface: UIViewRepresentable {
     /// L'étiquette VoiceOver : ce que fait l'activation (le tap du mode épuré).
     var label: String
@@ -21,6 +23,8 @@ struct VideoGestureSurface: UIViewRepresentable {
     var onDoubleTap: @MainActor () -> Void
     /// Rapport du pas de pincement, point de contact (centre des doigts) et taille de la vue.
     var onPinch: @MainActor (_ factor: CGFloat, _ anchor: CGPoint, _ viewSize: CGSize) -> Void
+    /// Un glissement de ce nombre de doigts doit-il déplacer l'image ? (un doigt : seulement si elle est agrandie)
+    var acceptsPan: @MainActor (_ touchCount: Int) -> Bool
     /// Déplacement des doigts depuis l'appel précédent, et taille de la vue.
     var onPan: @MainActor (_ translation: CGSize, _ viewSize: CGSize) -> Void
     /// Un geste de zoom commence (vrai) ou finit (faux, y compris annulé par le système).
@@ -38,8 +42,8 @@ struct VideoGestureSurface: UIViewRepresentable {
 
         let pinch = UIPinchGestureRecognizer(target: coordinator, action: #selector(Coordinator.pinched(_:)))
         let pan = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.panned(_:)))
-        // Deux doigts exactement : un doigt seul n'est jamais un glissement de zoom.
-        pan.minimumNumberOfTouches = 2
+        // Un ou deux doigts : `acceptsPan` écarte le doigt seul quand l'image n'est pas agrandie.
+        pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 2
         let doubleTap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.doubleTapped(_:)))
         doubleTap.numberOfTapsRequired = 2
@@ -87,6 +91,8 @@ struct VideoGestureSurface: UIViewRepresentable {
         var parent: VideoGestureSurface
         weak var pinch: UIPinchGestureRecognizer?
         weak var pan: UIPanGestureRecognizer?
+        /// Nombre de doigts au dernier pas du glissement : quand il change, le centre des doigts saute.
+        private var panTouchCount = 0
 
         init(_ parent: VideoGestureSurface) {
             self.parent = parent
@@ -112,11 +118,20 @@ struct VideoGestureSurface: UIViewRepresentable {
             guard let view = recognizer.view else { return }
             switch recognizer.state {
             case .began, .changed:
+                let touches = recognizer.numberOfTouches
+                if recognizer.state == .began { panTouchCount = touches }
                 let translation = recognizer.translation(in: view)
                 recognizer.setTranslation(.zero, in: view)
+                // Un doigt de plus ou de moins : le centre des doigts saute, on repart de là sans déplacer l'image.
+                // Un doigt seul sur l'image entière : rien à déplacer, et pas d'indicateur.
+                guard touches == panTouchCount, parent.acceptsPan(touches) else {
+                    panTouchCount = touches
+                    return
+                }
                 parent.onZoomGesture(true)
                 parent.onPan(CGSize(width: translation.x, height: translation.y), view.bounds.size)
             case .ended, .cancelled, .failed:
+                panTouchCount = 0
                 parent.onZoomGesture(false)
             default:
                 break

@@ -22,13 +22,20 @@ struct VideoZoomTests {
         #expect(!zoom.isZoomed)
     }
 
-    @Test("Le pincement agrandit, et le facteur reste entre 1× et 4×")
+    @Test("Le zoom maximal est 8×")
+    func maxScaleIsEight() {
+        #expect(VideoZoom.minScale == 1)
+        #expect(VideoZoom.maxScale == 8)
+    }
+
+    @Test("Le pincement agrandit, et le facteur reste entre 1× et 8×")
     func scaleIsClamped() {
         var zoom = VideoZoom()
         zoom.pinch(by: 2, around: CGPoint(x: 400, y: 225), viewSize: landscape, videoSize: video)
         #expect(close(zoom.scale, 2))
         #expect(zoom.isZoomed)
         zoom.pinch(by: 10, around: CGPoint(x: 400, y: 225), viewSize: landscape, videoSize: video)
+        #expect(zoom.scale == 8)
         #expect(zoom.scale == VideoZoom.maxScale)
         zoom.pinch(by: 0.001, around: CGPoint(x: 400, y: 225), viewSize: landscape, videoSize: video)
         #expect(zoom.scale == VideoZoom.minScale)
@@ -70,6 +77,18 @@ struct VideoZoomTests {
         #expect(abs(zoom.offset.height) <= 675)
     }
 
+    @Test("À 8×, le coin est borné lui aussi")
+    func pinchInCornerAtMaxScale() {
+        var zoom = VideoZoom()
+        zoom.pinch(by: 8, around: CGPoint(x: 800, y: 450), viewSize: landscape, videoSize: video)
+        // Image 8× : elle dépasse de 7 fois la vue ; le décalage maximal est la moitié de ce dépassement.
+        #expect(close(zoom.offset.width, -2800))
+        #expect(close(zoom.offset.height, -1575))
+        zoom.pan(by: CGSize(width: 9000, height: 9000), viewSize: landscape, videoSize: video)
+        #expect(close(zoom.offset.width, 2800))
+        #expect(close(zoom.offset.height, 1575))
+    }
+
     @Test("Le glissement déplace l'image zoomée, dans ses bords")
     func panIsBounded() {
         var zoom = VideoZoom()
@@ -91,6 +110,19 @@ struct VideoZoomTests {
         var zoom = VideoZoom()
         zoom.pan(by: CGSize(width: 80, height: 80), viewSize: landscape, videoSize: video)
         #expect(zoom == VideoZoom())
+    }
+
+    @Test("Un doigt ne déplace l'image que si elle est zoomée ; deux doigts, toujours")
+    func panIsAcceptedOnlyWhenUseful() {
+        var zoom = VideoZoom()
+        #expect(!zoom.acceptsPan(touchCount: 1))
+        #expect(zoom.acceptsPan(touchCount: 2))
+        zoom.pinch(by: 2, around: CGPoint(x: 400, y: 225), viewSize: landscape, videoSize: video)
+        #expect(zoom.acceptsPan(touchCount: 1))
+        #expect(zoom.acceptsPan(touchCount: 2))
+        #expect(!zoom.acceptsPan(touchCount: 0))
+        zoom.reset()
+        #expect(!zoom.acceptsPan(touchCount: 1))
     }
 
     @Test("Portrait : l'image 16:9 ne glisse que dans le sens où elle dépasse")
@@ -150,6 +182,8 @@ struct VideoZoomTests {
         #expect(VideoZoom.label(scale: 2.43) == "2,4×")
         #expect(VideoZoom.label(scale: 3.96) == "4×")
         #expect(VideoZoom.label(scale: 4) == "4×")
+        #expect(VideoZoom.label(scale: 7.96) == "8×")
+        #expect(VideoZoom.label(scale: 8) == "8×")
         #expect(VideoZoom.label(scale: 1.04) == "1×")
     }
 }

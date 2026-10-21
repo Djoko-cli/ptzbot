@@ -58,8 +58,9 @@ struct ControlScreen: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            // La vidéo, son zoom d'affichage (pincer, glisser à deux doigts, double tap) et le tap sur la vidéo nue, qui masque
-            // ou rend l'interface. Sous les commandes : le joystick, le zoom et les boutons gardent leurs propres gestes.
+            // La vidéo, son zoom d'affichage (pincer, glisser à un ou deux doigts, double tap) et le tap sur la vidéo nue,
+            // qui masque ou rend l'interface. Sous les commandes : le joystick, le zoom et les boutons gardent leurs
+            // propres gestes.
             ZoomableVideoView(
                 session: model.video,
                 tapLabel: clean ? "Afficher les commandes" : "Masquer les commandes",
