@@ -13,6 +13,8 @@ Ne plus saisir le nom Tailscale : l'app pourrait retenir l'adresse Tailscale du 
 
 ## Exposition automatique
 
+**Statut :** fait (21/10/2026), dans la 1.2.0 (spec § 6.11) : par le SDK (`cameraSetExposureAbsolute`), l'utilitaire étant toujours chargé depuis la 1.1.1.
+
 Un bouton dans l'app iOS, et dans le panneau du Mac, pour l'exposition automatique, à côté du bouton d'enregistrement. Le SDK OBSBOT expose le mode d'exposition (`cameraSetExposureModeR`), l'exposition sur le visage (`cameraSetFaceAER`), le verrouillage (`cameraSetAELockR`) et la correction d'exposition (`cameraSetPAEEvBiasR`). À vérifier d'abord : la commande UVC standard du mode d'exposition (`CT_AE_MODE`), que `ptzd` envoie déjà par IOKit pour la nacelle, éviterait le SDK et ses 4,2 s de lancement. Comportement voulu par Majid : **activé**, la caméra est en exposition automatique continue ; **désactivé**, elle revient au réglage fait dans OBSBOT Center. Il faut donc lire et retenir le réglage en place (mode, valeurs manuelles, correction) avant d'activer, puis le remettre à la désactivation, y compris après un redémarrage de `ptzd`.
 
 ## Licence de redistribution du SDK OBSBOT
