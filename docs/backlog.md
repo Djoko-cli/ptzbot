@@ -155,3 +155,13 @@ Réduire le délai entre la scène et l'image, dans l'app iOS (WebRTC) comme dan
 - **Pistes côté go2rtc et WebRTC** : tampon de gigue et délai de lecture de WebRTC sur iOS (extension `playout-delay`), transport RTSP interne en TCP ou UDP, synchronisation du son qui peut retarder l'image.
 - **Pistes côté HomeKit** : copie du flux H.264 au lieu d'un réencodage par Homebridge (camera-ffmpeg), tampons de son ffmpeg de Homebridge. Les réglages de Homebridge restent faits par Djoko.
 - Chaque gain est mesuré avant et après, sans dégrader la stabilité (coreaudiod, ffmpeg accrochés) ni la qualité du son.
+
+## Suivi IA perdu après une veille prolongée du Mac (demande de Djoko, 24/10/2026)
+
+Constat de Djoko : après une longue veille du Mac, le suivi IA ne revient pas, alors qu'il était activé avant la veille. La caméra a sans doute été réinitialisée (bus USB suspendu ou caméra rebranchée), et ptzd ne la remet pas en suivi : au branchement, il oublie le dernier ordre (`control.forget()`), au lieu de le réappliquer.
+
+À faire :
+- **retenir l'état voulu du suivi IA** (activé ou non), comme pour la vie privée et l'exposition auto, et le réappliquer au réveil du Mac (`SystemWakeWatcher`), au rebranchement de la caméra et au démarrage de ptzd, sauf si la vie privée est voulue ;
+- **ajouter une relecture périodique** de l'état réel du suivi par l'utilitaire du SDK (toujours chargé depuis la 1.1.1), par exemple toutes les 30 s, sur le modèle de la relecture de la vie privée : si le suivi est voulu mais lu coupé, le relancer ; vérifier d'abord quel champ du SDK donne le mode IA de la Tiny 2 ;
+- passer par la même file que la vie privée et l'exposition, la vie privée restant prioritaire ;
+- au banc : veille du Mac d'une heure ou plus, suivi activé avant ; puis caméra débranchée et rebranchée, suivi activé.
