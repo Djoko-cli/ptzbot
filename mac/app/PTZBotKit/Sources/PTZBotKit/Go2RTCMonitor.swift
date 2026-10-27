@@ -23,6 +23,8 @@ public final class Go2RTCMonitor {
     @ObservationIgnored private var seenLaunch = 0
     @ObservationIgnored private var coreAudio = CoreAudioWatch()
     @ObservationIgnored private var probing: Task<Void, Never>?
+    /// La garde de la sonde en cours : à son échéance, une sonde sans résultat compte pour ratée.
+    @ObservationIgnored private var probeGuard: (any Cancellable)?
     @ObservationIgnored private var watching = false
     @ObservationIgnored private var started = false
     @ObservationIgnored private var poll: (any Cancellable)?
@@ -71,6 +73,9 @@ public final class Go2RTCMonitor {
         watching = false
         poll?.cancel()
         poll = nil
+        // Plus de contrôle : les ffmpeg vidéo vus avant la fermeture ne comptent plus « de suite » à la réouverture.
+        coreAudio.videoCount(0, now: scheduler.now)
+        update()
     }
 
     /// Attend la lecture en cours (tests).
@@ -109,16 +114,30 @@ public final class Go2RTCMonitor {
     }
 
     /// Suspicion ouverte : coreaudiod est sondé, hors du fil de l'interface, au plus une fois toutes les 30 s et jamais
-    /// deux fois en même temps.
+    /// deux fois en même temps. La sonde est bornée par `ChildProcess.run` ; la garde `probeGuard` couvre en plus le cas
+    /// où l'enfant ne se laisserait pas tuer : la sonde est comptée ratée, la suivante peut partir, et la réponse tardive
+    /// de la première est ignorée (son numéro n'est plus le bon).
     private func probeIfNeeded() {
         guard supervisor.state == .running, coreAudio.shouldProbe(now: scheduler.now) else { return }
-        coreAudio.probeStarted(now: scheduler.now)
+        let number = coreAudio.probeStarted(now: scheduler.now)
         let probe = probe
+        probeGuard?.cancel()
+        probeGuard = scheduler.schedule(after: CoreAudioDetector.probeGuard) { [weak self] in
+            guard let self else { return }
+            probeGuard = nil
+            coreAudio.probeFinished(responds: false, probe: number)
+            update()
+        }
         probing = Task { [weak self] in
             let responds = await Task.detached { probe.coreAudioResponds() }.value
             guard let self else { return }
-            coreAudio.probeFinished(responds: responds)
+            coreAudio.probeFinished(responds: responds, probe: number)
             update()
+            // Un résultat périmé (garde déjà passée) n'a pas à défaire la garde d'une sonde plus récente.
+            if !coreAudio.isProbing {
+                probeGuard?.cancel()
+                probeGuard = nil
+            }
         }
     }
 
@@ -127,7 +146,7 @@ public final class Go2RTCMonitor {
         scanLog()
         guard supervisor.state == .running, let root = supervisor.gardienPID else {
             stream = nil
-            coreAudio.videoCount(0)
+            coreAudio.videoCount(0, now: scheduler.now)
             update()
             return
         }
@@ -138,7 +157,7 @@ public final class Go2RTCMonitor {
         // go2rtc a pu s'arrêter pendant la lecture.
         guard supervisor.state == .running else { return }
         stream = body.flatMap { Go2RTCStreams.status(of: Go2RTCSettings.streamName, in: $0) }
-        coreAudio.videoCount(output.map { CoreAudioDetector.videoFFmpegCount(psOutput: $0, root: root) } ?? 0)
+        coreAudio.videoCount(output.map { CoreAudioDetector.videoFFmpegCount(psOutput: $0, root: root) } ?? 0, now: scheduler.now)
         update()
     }
 

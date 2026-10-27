@@ -1,8 +1,9 @@
 import Foundation
 
 /// Le blocage de coreaudiod (spec B3 § 5) : plus d'un ffmpeg vidéo sous go2rtc à deux contrôles de suite, ou un
-/// `exec: timeout` dans le journal depuis moins de 2 min **confirmé par une sonde** de coreaudiod qui ne répond pas. Un
-/// timeout seul ne suffit plus : la caméra qui quitte le bus USB pendant une veille du Mac en donne un aussi (24/10).
+/// `exec: timeout` dans le journal depuis moins de 2 min **confirmé par deux sondes de suite** de coreaudiod qui ne
+/// répondent pas. Un timeout seul ne suffit plus : la caméra qui quitte le bus USB pendant une veille du Mac en donne un
+/// aussi (24/10) ; et une sonde lente juste après un réveil (appareils qui se réénumèrent) ne suffit pas non plus.
 /// PTZBot ne le répare jamais lui-même (il faudrait les droits root) : il donne la commande.
 public enum CoreAudioDetector {
     /// Durée de la suspicion ouverte par un `exec: timeout`.
@@ -11,9 +12,16 @@ public enum CoreAudioDetector {
     public static let probeInterval: TimeInterval = 30
     /// La sonde est un processus enfant limité à ce délai : au-delà, coreaudiod est tenu pour figé.
     public static let probeTimeout: TimeInterval = 5
+    /// Garde du moniteur : une sonde qui n'a rien rendu à ce délai (enfant impossible à tuer, 5 s + 2 s de grâce au pire
+    /// sinon) compte comme ratée, et une nouvelle sonde reste possible.
+    public static let probeGuard: TimeInterval = 10
+    /// Sondes ratées de suite, pendant la même suspicion, avant d'alerter.
+    public static let failedProbesToAlert = 2
     /// Contrôles de suite où plus d'un ffmpeg vidéo doit être vu : un seul peut être le chevauchement passager d'un
     /// redémarrage d'ffmpeg (au réveil du Mac).
     public static let extraVideoChecks = 2
+    /// Au-delà de ce délai entre deux contrôles (deux fois la lecture de 2 s du panneau), ils ne sont plus « de suite ».
+    public static let extraVideoMaxGap: TimeInterval = 4
     public static let repairCommand = "sudo killall -9 coreaudiod"
 
     /// Une ligne de `ps -A -ww -o pid=,ppid=,command=`.
@@ -59,25 +67,46 @@ public enum CoreAudioDetector {
 public struct CoreAudioWatch: Equatable, Sendable {
     /// Le dernier `exec: timeout` vu (horloge de la surveillance) : la suspicion dure `timeoutWindow` après lui.
     private var lastTimeout: TimeInterval?
-    /// La dernière sonde de cette suspicion n'a pas répondu (expirée ou en échec).
-    private var probeFailed = false
+    /// Sondes ratées de suite (expirées ou en échec) pendant la suspicion en cours : zéro dès qu'une sonde répond, et dès
+    /// qu'une nouvelle suspicion s'ouvre.
+    private var failedProbes = 0
     /// Début de la sonde en cours (nil : aucune), et de la dernière.
     private var probeStart: TimeInterval?
     private var lastProbe: TimeInterval?
-    /// Contrôles de suite où plus d'un ffmpeg vidéo a été vu.
+    /// Numéro de la dernière sonde lancée : le résultat d'une sonde périmée (nouveau go2rtc, garde du moniteur) est écarté.
+    private var probeNumber = 0
+    /// Contrôles de suite où plus d'un ffmpeg vidéo a été vu, et l'heure du dernier.
     private var extraVideoStreak = 0
+    private var lastExtraVideo: TimeInterval?
 
     public init() {}
 
-    /// Un `exec: timeout` vient d'être lu dans le journal : la suspicion s'ouvre (ou se prolonge).
+    /// Un `exec: timeout` vient d'être lu dans le journal : la suspicion s'ouvre (ou se prolonge). Une suspicion neuve
+    /// repart sans les sondes ratées de la précédente : une vraie panne réparée ne doit pas alerter au timeout d'une veille.
     public mutating func sawTimeout(at now: TimeInterval) {
+        if !suspicious(now: now) {
+            failedProbes = 0
+        }
         lastTimeout = now
     }
 
-    /// Le nombre de ffmpeg vidéo sous go2rtc, à un contrôle.
-    public mutating func videoCount(_ count: Int) {
-        extraVideoStreak = count > 1 ? extraVideoStreak + 1 : 0
+    /// Le nombre de ffmpeg vidéo sous go2rtc, à un contrôle (`count` à zéro quand la surveillance s'arrête). Deux contrôles
+    /// séparés de plus de `extraVideoMaxGap` ne sont pas « de suite ».
+    public mutating func videoCount(_ count: Int, now: TimeInterval) {
+        guard count > 1 else {
+            extraVideoStreak = 0
+            lastExtraVideo = nil
+            return
+        }
+        if let last = lastExtraVideo, now - last > CoreAudioDetector.extraVideoMaxGap {
+            extraVideoStreak = 0
+        }
+        extraVideoStreak += 1
+        lastExtraVideo = now
     }
+
+    /// Une sonde est en cours (lancée, sans résultat ni garde expirée).
+    public var isProbing: Bool { probeStart != nil }
 
     private func suspicious(now: TimeInterval) -> Bool {
         lastTimeout.map { now - $0 < CoreAudioDetector.timeoutWindow } ?? false
@@ -89,34 +118,45 @@ public struct CoreAudioWatch: Equatable, Sendable {
         return lastProbe.map { now - $0 >= CoreAudioDetector.probeInterval } ?? true
     }
 
-    public mutating func probeStarted(now: TimeInterval) {
+    /// Une sonde part : son numéro, à rendre avec son résultat.
+    @discardableResult
+    public mutating func probeStarted(now: TimeInterval) -> Int {
         probeStart = now
         lastProbe = now
+        probeNumber += 1
+        return probeNumber
     }
 
-    /// Résultat de la sonde : elle répond, la suspicion est levée (sauf un timeout lu pendant qu'elle tournait) ; elle ne
-    /// répond pas, l'alerte tient tant que dure la suspicion.
-    public mutating func probeFinished(responds: Bool) {
-        let started = probeStart ?? -.infinity
+    /// Résultat de la sonde `probe` : elle répond, la suspicion est levée (sauf un timeout lu pendant qu'elle tournait) ;
+    /// elle ne répond pas, elle compte pour une sonde ratée (l'alerte en demande `failedProbesToAlert` de suite). Le
+    /// résultat d'une sonde qui n'est plus la sonde en cours (go2rtc relancé, garde expirée) est ignoré.
+    public mutating func probeFinished(responds: Bool, probe: Int) {
+        guard probe == probeNumber, let started = probeStart else { return }
         probeStart = nil
-        probeFailed = !responds
-        if responds, let last = lastTimeout, last <= started {
-            lastTimeout = nil
+        if responds {
+            failedProbes = 0
+            if let last = lastTimeout, last <= started {
+                lastTimeout = nil
+            }
+        } else {
+            failedProbes += 1
         }
     }
 
-    /// Un nouveau go2rtc : les alertes du précédent sont effacées.
+    /// Un nouveau go2rtc : les alertes du précédent sont effacées, et la sonde en cours ne vaut plus rien.
     public mutating func reset() {
         lastTimeout = nil
-        probeFailed = false
+        failedProbes = 0
+        probeStart = nil
         extraVideoStreak = 0
+        lastExtraVideo = nil
     }
 
     public func isStuck(now: TimeInterval) -> Bool {
         if extraVideoStreak >= CoreAudioDetector.extraVideoChecks {
             return true
         }
-        return probeFailed && suspicious(now: now)
+        return failedProbes >= CoreAudioDetector.failedProbesToAlert && suspicious(now: now)
     }
 }
 

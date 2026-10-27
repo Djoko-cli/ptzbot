@@ -79,7 +79,8 @@ public struct SystemToolchain: Toolchain {
     }
 }
 
-/// Un processus lancé et attendu, avec un délai : SIGTERM au-delà, puis SIGKILL deux secondes plus tard. Il est
+/// Un processus lancé et attendu, avec un délai : SIGTERM au-delà, puis SIGKILL deux secondes plus tard (et, si même cela
+/// ne le libère pas, deux secondes encore avant de rendre la main : jamais d'attente sans limite). Il est
 /// lancé dans son propre groupe de processus, et les signaux visent tout le groupe : clang++ lance lui-même
 /// `clang -cc1` et `ld`, qui ne survivent pas à un délai dépassé.
 /// L'entrée standard est vide ; la sortie et les erreurs sont jetées, ou recueillies dans un fichier temporaire.
@@ -150,7 +151,9 @@ enum ChildProcess {
             Darwin.kill(-pid, SIGTERM)
             if done.wait(timeout: .now() + terminationGrace) == .timedOut {
                 Darwin.kill(-pid, SIGKILL)
-                done.wait()
+                // Jamais d'attente sans limite : un enfant impossible à tuer (attente du noyau) ne doit pas bloquer
+                // l'appelant pour toujours. Le fil d'attente le récoltera s'il finit un jour.
+                _ = done.wait(timeout: .now() + terminationGrace)
             }
         }
         // Les restes du groupe (un enfant qui ignorerait SIGTERM) ne survivent pas au délai.

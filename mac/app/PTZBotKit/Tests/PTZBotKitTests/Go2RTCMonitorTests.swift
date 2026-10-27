@@ -56,8 +56,10 @@ final class FakeCoreAudioProbe: CoreAudioProbe, @unchecked Sendable {
     }
 
     var calls: Int { lock.withLock { _calls } }
-    /// Sondes en cours au même moment, au plus (jamais deux).
+    /// Sondes en cours au même moment, au plus (jamais deux, hors sonde abandonnée par la garde du moniteur).
     var maxRunning: Int { lock.withLock { _maxRunning } }
+    /// Sondes en cours maintenant.
+    var running: Int { lock.withLock { _running } }
 
     /// Les sondes suivantes restent bloquées jusqu'à `release()`.
     func block() {
@@ -70,6 +72,17 @@ final class FakeCoreAudioProbe: CoreAudioProbe, @unchecked Sendable {
             return self.gate
         }
         gate?.signal()
+    }
+
+    /// Libère toutes les sondes bloquées.
+    func releaseAll() {
+        let (gate, count) = lock.withLock { () -> (DispatchSemaphore?, Int) in
+            defer { self.gate = nil }
+            return (self.gate, _running)
+        }
+        for _ in 0..<count {
+            gate?.signal()
+        }
     }
 
     func coreAudioResponds() -> Bool {
@@ -155,15 +168,30 @@ struct Go2RTCSignalsTests {
     @Test("coreaudiod : un ffmpeg vidéo en trop vu une seule fois n'alerte pas (redémarrage d'ffmpeg) ; deux contrôles de suite, si")
     func extraVideoTwiceInARow() {
         var watch = CoreAudioWatch()
-        watch.videoCount(2)
+        watch.videoCount(2, now: 0)
         #expect(!watch.isStuck(now: 0))
-        watch.videoCount(2)
-        #expect(watch.isStuck(now: 0))
-        watch.videoCount(1)
-        #expect(!watch.isStuck(now: 0))
-        watch.videoCount(2)
-        #expect(!watch.isStuck(now: 0))
+        watch.videoCount(2, now: 2)
+        #expect(watch.isStuck(now: 2))
+        watch.videoCount(1, now: 4)
+        #expect(!watch.isStuck(now: 4))
+        watch.videoCount(2, now: 6)
+        #expect(!watch.isStuck(now: 6))
         #expect(CoreAudioDetector.repairCommand == "sudo killall -9 coreaudiod")
+    }
+
+    @Test("coreaudiod : deux contrôles trop espacés (panneau fermé entre les deux) ne comptent pas « de suite »")
+    func extraVideoChecksTooFarApart() {
+        var watch = CoreAudioWatch()
+        watch.videoCount(2, now: 0)
+        watch.videoCount(2, now: CoreAudioDetector.extraVideoMaxGap + 1)
+        #expect(!watch.isStuck(now: 100))
+        // Le second contrôle ouvre une nouvelle série : un troisième, à cadence normale, alerte.
+        watch.videoCount(2, now: CoreAudioDetector.extraVideoMaxGap + 3)
+        #expect(watch.isStuck(now: 100))
+        // Un arrêt de la surveillance remet le compte à zéro.
+        watch.videoCount(0, now: 200)
+        watch.videoCount(2, now: 202)
+        #expect(!watch.isStuck(now: 202))
     }
 
     @Test("coreaudiod : un exec: timeout seul n'alerte pas ; il ouvre une suspicion, et la sonde qui répond la lève")
@@ -172,34 +200,101 @@ struct Go2RTCSignalsTests {
         watch.sawTimeout(at: 100)
         #expect(!watch.isStuck(now: 100))
         #expect(watch.shouldProbe(now: 100))
-        watch.probeStarted(now: 100)
+        let probe = watch.probeStarted(now: 100)
         // Jamais deux sondes en même temps.
         #expect(!watch.shouldProbe(now: 101))
-        watch.probeFinished(responds: true)
+        watch.probeFinished(responds: true, probe: probe)
         #expect(!watch.isStuck(now: 101))
         // Suspicion levée : plus de sonde sans nouveau timeout.
         #expect(!watch.shouldProbe(now: 200))
     }
 
-    @Test("coreaudiod : exec: timeout et sonde expirée ou en échec : alerte, tant que la suspicion dure (2 min sans nouveau timeout)")
+    /// Deux sondes ratées de suite, à `probeInterval` l'une de l'autre, pendant la même suspicion.
+    private func failTwice(_ watch: inout CoreAudioWatch, from start: TimeInterval) {
+        let first = watch.probeStarted(now: start)
+        watch.probeFinished(responds: false, probe: first)
+        let second = watch.probeStarted(now: start + CoreAudioDetector.probeInterval)
+        watch.probeFinished(responds: false, probe: second)
+    }
+
+    @Test("coreaudiod : exec: timeout et deux sondes ratées de suite : alerte, tant que la suspicion dure (2 min sans nouveau timeout) ; une seule sonde ratée n'alerte pas")
     func timeoutThenProbeFails() {
         var watch = CoreAudioWatch()
         watch.sawTimeout(at: 100)
-        watch.probeStarted(now: 100)
-        watch.probeFinished(responds: false)
-        #expect(watch.isStuck(now: 105))
+        let first = watch.probeStarted(now: 100)
+        watch.probeFinished(responds: false, probe: first)
+        #expect(!watch.isStuck(now: 105))
+        // La suspicion dure : une seconde sonde part après `probeInterval`.
+        #expect(watch.shouldProbe(now: 100 + CoreAudioDetector.probeInterval))
+        let second = watch.probeStarted(now: 100 + CoreAudioDetector.probeInterval)
+        watch.probeFinished(responds: false, probe: second)
+        #expect(watch.isStuck(now: 100 + CoreAudioDetector.probeInterval + 5))
         #expect(watch.isStuck(now: 100 + CoreAudioDetector.timeoutWindow - 1))
         #expect(!watch.isStuck(now: 100 + CoreAudioDetector.timeoutWindow))
         #expect(!watch.shouldProbe(now: 100 + CoreAudioDetector.timeoutWindow))
+    }
+
+    @Test("coreaudiod : une sonde qui répond entre deux ratées remet le compte à zéro, même si la suspicion dure")
+    func respondingProbeResetsFailures() {
+        var watch = CoreAudioWatch()
+        watch.sawTimeout(at: 0)
+        let first = watch.probeStarted(now: 0)
+        watch.probeFinished(responds: false, probe: first)
+        let second = watch.probeStarted(now: 30)
+        // Un timeout lu pendant la sonde : la suspicion dure, malgré la réponse.
+        watch.sawTimeout(at: 31)
+        watch.probeFinished(responds: true, probe: second)
+        let third = watch.probeStarted(now: 60)
+        watch.probeFinished(responds: false, probe: third)
+        #expect(!watch.isStuck(now: 61))
+    }
+
+    @Test("coreaudiod : une sonde ratée d'une suspicion passée ne survit pas : un nouveau timeout ne montre l'alerte qu'après deux sondes ratées")
+    func failuresDoNotSurviveSuspicion() {
+        var watch = CoreAudioWatch()
+        watch.sawTimeout(at: 100)
+        failTwice(&watch, from: 100)
+        #expect(watch.isStuck(now: 140))
+        // L'utilisateur répare, les timeouts cessent, la suspicion s'éteint.
+        #expect(!watch.isStuck(now: 100 + CoreAudioDetector.timeoutWindow))
+        // Une veille plus tard : un nouveau timeout ouvre une autre suspicion, sans alerte avant le verdict des sondes.
+        watch.sawTimeout(at: 1000)
+        #expect(!watch.isStuck(now: 1000))
+        let probe = watch.probeStarted(now: 1000)
+        #expect(!watch.isStuck(now: 1001))
+        watch.probeFinished(responds: false, probe: probe)
+        #expect(!watch.isStuck(now: 1002))
+    }
+
+    @Test("coreaudiod : la réponse d'une sonde lancée avant reset() est ignorée")
+    func probeBeforeResetIsIgnored() {
+        var watch = CoreAudioWatch()
+        watch.sawTimeout(at: 0)
+        let first = watch.probeStarted(now: 0)
+        watch.probeFinished(responds: false, probe: first)
+        let stale = watch.probeStarted(now: CoreAudioDetector.probeInterval)
+        // Un nouveau go2rtc, un nouveau timeout, et sa propre sonde.
+        watch.reset()
+        watch.sawTimeout(at: 40)
+        #expect(!watch.isStuck(now: 40))
+        watch.probeFinished(responds: false, probe: stale)
+        #expect(!watch.isStuck(now: 41))
+        let fresh = watch.probeStarted(now: 70)
+        // La sonde périmée répond enfin, alors que la nouvelle tourne : ignorée, ce n'est plus la sonde en cours.
+        watch.probeFinished(responds: true, probe: stale)
+        watch.probeFinished(responds: false, probe: fresh)
+        // Une seule sonde ratée dans la nouvelle série (pas d'alerte), et la suspicion du nouveau timeout reste ouverte.
+        #expect(!watch.isStuck(now: 71))
+        #expect(watch.shouldProbe(now: 70 + CoreAudioDetector.probeInterval))
     }
 
     @Test("coreaudiod : au plus une sonde toutes les 30 s ; une sonde qui répond ne lève pas un timeout vu pendant qu'elle tournait")
     func probeCadence() {
         var watch = CoreAudioWatch()
         watch.sawTimeout(at: 0)
-        watch.probeStarted(now: 0)
+        let probe = watch.probeStarted(now: 0)
         watch.sawTimeout(at: 1)
-        watch.probeFinished(responds: true)
+        watch.probeFinished(responds: true, probe: probe)
         #expect(!watch.isStuck(now: 2))
         #expect(!watch.shouldProbe(now: 10))
         #expect(!watch.shouldProbe(now: CoreAudioDetector.probeInterval - 1))
@@ -334,7 +429,7 @@ struct Go2RTCMonitorTests {
         #expect(!monitor.health.accessDenied)
     }
 
-    @Test("exec: timeout, sonde expirée : alerte coreaudiod, puis plus rien 2 min après ; relu toutes les 10 s sans panneau")
+    @Test("exec: timeout, deux sondes expirées de suite : alerte coreaudiod, puis plus rien 2 min après ; relu toutes les 10 s sans panneau")
     func timeout() async throws {
         let directory = try Go2RTCFixtures.directory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -345,6 +440,13 @@ struct Go2RTCMonitorTests {
         scheduler.advance(by: Go2RTCMonitor.logScanInterval)
         await monitor.waitForProbe()
         #expect(probe.calls == 1)
+        // Une seule sonde ratée (une veille lente, des appareils qui se réénumèrent) : pas d'alerte.
+        #expect(!monitor.health.coreAudioStuck)
+        for _ in 0..<3 {
+            scheduler.advance(by: Go2RTCMonitor.logScanInterval)
+        }
+        await monitor.waitForProbe()
+        #expect(probe.calls == 2)
         #expect(monitor.health.coreAudioStuck)
         scheduler.advance(by: CoreAudioDetector.timeoutWindow)
         #expect(!monitor.health.coreAudioStuck)
@@ -374,25 +476,72 @@ struct Go2RTCMonitorTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let (_, monitor, log) = await running(directory)
         probe.responds = false
-        probe.block()
         monitor.start()
-        for _ in 0..<6 {
-            try append("ERR [exec] timeout source=exec:…\n", to: log)
-            scheduler.advance(by: Go2RTCMonitor.logScanInterval)
-        }
-        // La première sonde est restée bloquée tout ce temps : aucune autre n'est partie.
-        #expect(await eventuallyTrue { probe.calls == 1 })
-        probe.release()
-        await monitor.waitForProbe()
-        #expect(monitor.health.coreAudioStuck)
-        for _ in 0..<6 {
+        for _ in 0..<12 {
             try append("ERR [exec] timeout source=exec:…\n", to: log)
             scheduler.advance(by: Go2RTCMonitor.logScanInterval)
             await monitor.waitForProbe()
         }
-        // 60 s de plus : deux sondes (toutes les 30 s), jamais deux ensemble.
-        #expect(probe.calls == 3)
+        // 120 s de timeouts : une sonde à 10, 40, 70 et 100 s, jamais deux ensemble ; deux ratées de suite : l'alerte.
+        #expect(probe.calls == 4)
         #expect(probe.maxRunning == 1)
+        #expect(monitor.health.coreAudioStuck)
+    }
+
+    @Test("Sonde sans réponse au bout de la garde : comptée ratée, une nouvelle sonde reste possible ; sa réponse tardive est ignorée")
+    func probeGuard() async throws {
+        let directory = try Go2RTCFixtures.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, monitor, log) = await running(directory)
+        probe.responds = true
+        probe.block()
+        monitor.start()
+        // t = 10 : la première sonde part, et reste bloquée (même la SIGKILL du processus enfant ne la libère pas).
+        try append("ERR [exec] timeout source=exec:…\n", to: log)
+        scheduler.advance(by: Go2RTCMonitor.logScanInterval)
+        #expect(await eventuallyTrue { probe.calls == 1 })
+        // Avant la garde : rien.
+        scheduler.advance(by: CoreAudioDetector.probeGuard - 1)
+        #expect(!monitor.health.coreAudioStuck)
+        // La garde passe (t = 20) : la sonde compte pour ratée ; une seule : pas d'alerte.
+        scheduler.advance(by: 1)
+        #expect(!monitor.health.coreAudioStuck)
+        // La suspicion dure (un timeout toutes les 10 s) ; 30 s après la première, une nouvelle sonde part malgré la
+        // première, toujours bloquée.
+        for _ in 0..<2 {
+            try append("ERR [exec] timeout source=exec:…\n", to: log)
+            scheduler.advance(by: Go2RTCMonitor.logScanInterval)
+        }
+        #expect(await eventuallyTrue { probe.calls == 2 })
+        // Sa garde passe à son tour : deux sondes ratées de suite, l'alerte.
+        scheduler.advance(by: CoreAudioDetector.probeGuard)
+        #expect(monitor.health.coreAudioStuck)
+        // Les réponses tardives (elles répondent !) sont ignorées : l'alerte tient.
+        probe.releaseAll()
+        #expect(await eventuallyTrue { probe.running == 0 })
+        await monitor.waitForProbe()
+        #expect(monitor.health.coreAudioStuck)
+    }
+
+    @Test("Deux contrôles de ffmpeg vidéo séparés par la fermeture du panneau ne comptent pas « de suite »")
+    func panelClosedBetweenVideoChecks() async throws {
+        let directory = try Go2RTCFixtures.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, monitor, _) = await running(directory)
+        api.body = StreamsFixtures.active
+        processes.output = "1000 1 g\n1001 1000 go2rtc\n1002 1001 ffmpeg -f avfoundation -an\n1003 1001 ffmpeg -f avfoundation -an\n"
+        monitor.beginWatching()
+        await monitor.waitForPoll()
+        #expect(!monitor.health.coreAudioStuck)
+        monitor.endWatching()
+        // Le panneau reste fermé plus de deux minutes, puis se rouvre : le premier contrôle repart de zéro.
+        scheduler.advance(by: 150)
+        monitor.beginWatching()
+        await monitor.waitForPoll()
+        #expect(!monitor.health.coreAudioStuck)
+        scheduler.advance(by: Go2RTCMonitor.pollInterval)
+        await monitor.waitForPoll()
+        #expect(monitor.health.coreAudioStuck)
     }
 
     @Test("Panneau fermé : plus de lecture de l'API ; go2rtc arrêté : ni clients ni alerte")

@@ -154,14 +154,14 @@ d'horloge pour les tests.
 | Caméra OBSBOT absente | § 3.6 ; puis l'API (`/api/streams`) : le stream n'a pas de producteur actif | « Caméra OBSBOT absente » |
 | Accès refusé | journal de go2rtc (erreur d'autorisation d'avfoundation) | « Accès à la caméra refusé », avec un bouton qui ouvre Réglages › Confidentialité |
 | Arrêts répétés | § 3.3 | « go2rtc s'arrête sans cesse : ouvrez le journal » |
-| coreaudiod bloqué | plus d'un ffmpeg vidéo enfant à deux contrôles de suite, ou `exec: timeout` dans le journal depuis moins de 2 min **confirmé par une sonde** de coreaudiod qui ne répond pas (28/10) | ligne **orange** « coreaudiod ne répond pas : la caméra est bloquée », avec un bouton « Copier la commande de réparation » (`sudo killall -9 coreaudiod`) |
+| coreaudiod bloqué | plus d'un ffmpeg vidéo enfant à deux contrôles de suite, ou `exec: timeout` dans le journal depuis moins de 2 min **confirmé par deux sondes de suite** de coreaudiod qui ne répondent pas (28/10) | ligne **orange** « coreaudiod ne répond pas : la caméra est bloquée », avec un bouton « Copier la commande de réparation » (`sudo killall -9 coreaudiod`) |
 
 - **État normal** : la pastille verte, et « · N clients » au survol, avec le détail par protocole (par exemple
   « RTSP ×1, WebRTC ×1 »).
 - **Clients** : PTZBot lit `GET http://127.0.0.1:1984/api/streams` toutes les 2 s, **seulement pendant que le panneau
   est ouvert**. Il compte les consommateurs du stream `obsbot` par type.
 - **coreaudiod** : PTZBot ne le répare jamais lui-même, puisqu'il faudrait les droits root.
-- **Détecteur (28/10)** : un `exec: timeout` seul n'alerte plus (la caméra qui quitte le bus USB pendant une veille du Mac en donne un aussi, constaté le 24/10) ; il ouvre une suspicion de 2 min, pendant laquelle PTZBot lance `system_profiler SPAudioDataType` (énumération des appareils audio par coreaudiod) dans un processus enfant limité à 5 s, hors du fil de l'interface, au plus toutes les 30 s et jamais deux à la fois : expirée ou en échec, l'alerte ; réponse à temps, la suspicion est levée. Plus d'un ffmpeg vidéo doit être vu à deux contrôles de suite (un chevauchement passager pendant un redémarrage d'ffmpeg, au réveil, n'alerte pas).
+- **Détecteur (28/10)** : un `exec: timeout` seul n'alerte plus (la caméra qui quitte le bus USB pendant une veille du Mac en donne un aussi, constaté le 24/10) ; il ouvre une suspicion de 2 min, pendant laquelle PTZBot lance `system_profiler SPAudioDataType` (énumération des appareils audio par coreaudiod) dans un processus enfant limité à 5 s, hors du fil de l'interface, au plus toutes les 30 s et jamais deux à la fois : réponse à temps, la suspicion est levée ; expirée ou en échec, elle ne suffit pas (une sonde lente juste après un réveil, pendant que les appareils se réénumèrent, n'est pas un blocage) : l'alerte demande deux sondes ratées de suite, à 30 s d'écart, pendant la même suspicion (une suspicion neuve repart de zéro). Une sonde sans résultat au bout de 10 s (enfant impossible à tuer) compte pour ratée, et la suivante peut partir. Plus d'un ffmpeg vidéo doit être vu à deux contrôles de suite, espacés de 4 s au plus (un chevauchement passager pendant un redémarrage d'ffmpeg, au réveil, n'alerte pas ; la fermeture du panneau remet le compte à zéro).
 
 ## 6. Interface
 
