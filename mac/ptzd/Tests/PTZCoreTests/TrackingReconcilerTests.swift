@@ -97,11 +97,60 @@ struct TrackingReconcilerTests {
         #expect(!store.state.aiTracking)
         runner.answer(.tracking(false))
         scheduler.advance(by: TrackingReconciler.rereadInterval)
-        if runner.inFlight == .trackingStatus {
-            runner.answer(.trackingStatus)
-        }
+        // Voulu coupé : la relecture part quand même (elle confirme l'état), et ne relance rien.
+        #expect(runner.inFlight == .trackingStatus)
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == nil)
         #expect(runner.orders == [true, false])
         #expect(controller.snapshot.aiTracking == .off)
+    }
+
+    @Test("Joystick pendant une relance partie : la relance aboutit, le suivi est recoupé derrière elle, jamais rallumé")
+    func joystickDuringResumeInFlight() {
+        let controller = trackingOn()
+        runner.aiMode = .off
+        scheduler.advance(by: TrackingReconciler.rereadInterval)
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == .tracking(true))
+        _ = controller.handle(.move(pan: 1, tilt: 0), from: 1)
+        #expect(!store.state.aiTracking)
+        runner.answer(.tracking(true))
+        #expect(runner.inFlight == .tracking(false))
+        runner.answer(.tracking(false))
+        for _ in 0..<10 {
+            scheduler.advance(by: TrackingReconciler.rereadInterval)
+            while let order = runner.inFlight {
+                runner.answer(order)
+            }
+        }
+        #expect(runner.orders == [true, true, false])
+        #expect(!store.state.aiTracking)
+        #expect(controller.snapshot.aiTracking == .off)
+        #expect(runner.refused.isEmpty)
+    }
+
+    @Test("Joystick pendant une relance encore en file : la coupure passe devant, la relance ne part jamais")
+    func joystickDuringQueuedResume() {
+        let exposure = ExposureSetting(shutter: 31, auto: true)
+        store.state = PersistedState(privacy: false, saved: nil, autoExposure: true, exposureOrigin: Self.manual31, aiTracking: true)
+        let controller = makeController()
+        controller.cameraPresenceChanged(true)
+        // L'exposition voulue est partie la première ; la relance attend derrière elle.
+        #expect(runner.inFlight == .exposure(exposure))
+        _ = controller.handle(.move(pan: 1, tilt: 0), from: 1)
+        #expect(!store.state.aiTracking)
+        runner.answer(.exposure(exposure))
+        #expect(runner.inFlight == .tracking(false))
+        runner.answer(.tracking(false))
+        for _ in 0..<10 {
+            scheduler.advance(by: TrackingReconciler.rereadInterval)
+            while let order = runner.inFlight {
+                runner.answer(order)
+            }
+        }
+        #expect(runner.orders == [false])
+        #expect(controller.snapshot.aiTracking == .off)
+        #expect(runner.refused.isEmpty)
     }
 
     // MARK: - Réapplication
@@ -133,17 +182,72 @@ struct TrackingReconcilerTests {
         #expect(runner.orders.isEmpty)
     }
 
-    @Test("Réveil du Mac, suivi voulu : relancé, puis relu")
+    @Test("Réveil du Mac, suivi voulu : l'état est lu d'abord ; lu coupé, il est relancé, puis relu")
     func wakeResumesAndRereads() {
         let controller = trackingOn()
         // La caméra a perdu son suivi pendant la veille (bus USB endormi).
         runner.aiMode = .off
         controller.systemWoke()
+        #expect(runner.inFlight == .trackingStatus)
+        runner.answer(.trackingStatus)
+        #expect(log.lines.contains("Suivi IA : lu coupé alors qu'il est voulu, relancé."))
         #expect(runner.inFlight == .tracking(true))
         runner.answer(.tracking(true))
         scheduler.advance(by: TrackingReconciler.settleDelay)
         #expect(runner.inFlight == .trackingStatus)
         runner.answer(.trackingStatus)
+        #expect(controller.snapshot.aiTracking == .on)
+        #expect(runner.orders == [true, true])
+    }
+
+    @Test("Réveil du Mac sur une caméra déjà en suivi : lue activée, aucun « on » ne part")
+    func wakeOnTrackingCameraSendsNothing() {
+        let controller = trackingOn()
+        controller.systemWoke()
+        #expect(runner.inFlight == .trackingStatus)
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == nil)
+        #expect(runner.orders == [true])
+        #expect(controller.snapshot.aiTracking == .on)
+        #expect(!log.lines.contains { $0.contains("Suivi IA : relance") && $0.contains("sortie de veille") })
+    }
+
+    @Test("obsbot-ai mis à jour (aiUpdated) : l'état est lu d'abord, « on » seulement s'il est lu coupé")
+    func utilityUpdateReadsBeforeResuming() {
+        let controller = trackingOn()
+        controller.aiUpdated()
+        #expect(runner.inFlight == .trackingStatus)
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == nil)
+        #expect(runner.orders == [true])
+        runner.aiMode = .off
+        controller.aiUpdated()
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+        #expect(runner.orders == [true, true])
+    }
+
+    @Test("Réveil, lectures impossibles (utilitaire ancien) : le « on » part tout de suite, sans lecture")
+    func wakeWithoutReadsResumesDirectly() {
+        let controller = started(wanted: false)
+        runner.answer(.trackingStatus, .unknownOrder)
+        _ = controller.handle(.aiTracking(on: true), from: 1)
+        runner.answer(.tracking(true))
+        controller.systemWoke()
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+        #expect(runner.trackingReads == 1)
+        #expect(runner.orders == [true, true])
+    }
+
+    @Test("Réveil, lecture ratée : on s'en remet au « on » direct, sans attendre la relecture lente")
+    func wakeReadFailureFallsBackToResume() {
+        let controller = trackingOn()
+        controller.systemWoke()
+        runner.answer(.trackingStatus, .sdkError)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
         #expect(controller.snapshot.aiTracking == .on)
         #expect(runner.orders == [true, true])
     }
@@ -245,12 +349,13 @@ struct TrackingReconcilerTests {
         runner.answer(.tracking(true))
         scheduler.advance(by: TrackingReconciler.rereadInterval)
         #expect(runner.trackingReads == 1)
+        // L'utilitaire recompilé sait peut-être lire : la lecture reprend, et passe avant le « on ».
         controller.aiUpdated()
-        #expect(runner.inFlight == .tracking(true))
-        runner.answer(.tracking(true))
-        scheduler.advance(by: TrackingReconciler.settleDelay)
         #expect(runner.inFlight == .trackingStatus)
         #expect(runner.trackingReads == 2)
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == nil)
+        #expect(controller.snapshot.aiTracking == .on)
     }
 
     @Test("Relecture jamais pendant un ordre de suivi, ni juste après : la caméra bascule encore")
@@ -377,5 +482,193 @@ struct TrackingReconcilerTests {
         runner.answer(.trackingStatus)
         #expect(runner.inFlight == .tracking(false))
         #expect(store.state.aiTracking)
+    }
+
+    // MARK: - Vérification de la position rétablie (sortie par le repli)
+
+    /// Entrée en vie privée par le repli (−70° d'abord) : le SDK n'est plus prêt, la caméra reviendra à −70° au réveil.
+    private func enterByFallback(_ controller: PTZController) {
+        runner.idleStop()
+        runner.autoReads = true
+        _ = controller.handle(.privacy(on: true), from: 1)
+        runner.answer(.tracking(false))
+        for _ in 0..<60 {
+            if let order = runner.inFlight {
+                runner.answer(order)
+            }
+            scheduler.advance(by: 0.1)
+        }
+        #expect(controller.snapshot.privacyMode == .native)
+    }
+
+    /// Sortie demandée à `request` (horloge du test), puis attente de la fin de la sortie : la position mémorisée vient
+    /// d'être renvoyée, sa vérification (2 s) commence.
+    private func exitByFallback(_ controller: PTZController, requestedAt request: TimeInterval) {
+        scheduler.advance(by: request - scheduler.now)
+        _ = controller.handle(.privacy(on: false), from: 1)
+        runner.answer(.privacy(false))
+        for _ in 0..<40 where controller.snapshot.privacy {
+            scheduler.advance(by: 0.1)
+        }
+        #expect(!controller.snapshot.privacy)
+    }
+
+    /// Vérification de la position en cours : aucun ordre de suivi ne part, quoi qu'il arrive, pendant `duration`.
+    private func expectNoTrackingOrder(for duration: TimeInterval) {
+        var elapsed = 0.0
+        while elapsed < duration {
+            scheduler.advance(by: 0.1)
+            elapsed += 0.1
+            if runner.inFlight == .trackingStatus {
+                runner.answer(.trackingStatus)
+            }
+            #expect(runner.inFlight != .tracking(true))
+            #expect(runner.orders == [true, false])
+        }
+    }
+
+    @Test("Vérification de la position rétablie : la minuterie de relecture qui tombe pendant ce temps ne relance pas le suivi")
+    func readTimerDuringVerificationSendsNothing() {
+        let controller = trackingOn()
+        // La relecture lente tombe à 32 s (2 s + 30 s). La sortie est demandée pour que sa vérification (2 s) la contienne.
+        enterByFallback(controller)
+        exitByFallback(controller, requestedAt: 29)
+        let verificationStart = scheduler.now
+        #expect(verificationStart > 30.5 && verificationStart < 31.5)
+        expectNoTrackingOrder(for: 32.5 - verificationStart)
+        #expect(!controller.snapshot.privacy)
+        // La vérification finie, le suivi reprend.
+        scheduler.advance(by: PrivacyReconciler.settleDelay)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+        #expect(runner.refused.isEmpty)
+    }
+
+    @Test("Vérification de la position rétablie : le réveil du Mac pendant ce temps ne relance pas le suivi ; la fin de la vérification le fait")
+    func wakeDuringVerificationSendsNothing() {
+        let controller = trackingOn()
+        enterByFallback(controller)
+        exitByFallback(controller, requestedAt: 12)
+        controller.systemWoke()
+        expectNoTrackingOrder(for: 1.5)
+        scheduler.advance(by: PrivacyReconciler.settleDelay)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+        #expect(camera.position == PanTiltPosition(pan: 12, tilt: 4))
+        #expect(runner.refused.isEmpty)
+    }
+
+    @Test("Un arrêt du joystick (move 0,0) pendant la vérification de la position ne fait pas reprendre le suivi")
+    func joystickReleaseDuringVerificationSendsNothing() {
+        let controller = trackingOn()
+        enterByFallback(controller)
+        exitByFallback(controller, requestedAt: 12)
+        _ = controller.handle(.move(pan: 0, tilt: 0), from: 1)
+        expectNoTrackingOrder(for: 1.5)
+        scheduler.advance(by: PrivacyReconciler.settleDelay)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+    }
+
+    @Test("Réapplication reportée pendant un ordre des apps : elle part à la fin de cet ordre, une seule fois")
+    func deferredReapplyStartsWhenOrderEnds() {
+        let controller = trackingOn()
+        enterByFallback(controller)
+        exitByFallback(controller, requestedAt: 12)
+        // Un ordre des apps part pendant la vérification, et dure plus qu'elle.
+        #expect(controller.handle(.aiTracking(on: true), from: 1) == nil)
+        #expect(runner.inFlight == .tracking(true))
+        scheduler.advance(by: PrivacyReconciler.settleDelay + 0.1)
+        // La position est rétablie : la reprise attend l'ordre en cours.
+        let before = runner.orders.count
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true), .sdkError)
+        #expect(runner.inFlight == .tracking(true))
+        #expect(runner.orders.count == before + 1)
+        runner.answer(.tracking(true))
+        #expect(controller.snapshot.aiTracking == .on)
+        scheduler.advance(by: TrackingReconciler.settleDelay)
+        runner.answer(.trackingStatus)
+        #expect(runner.orders.count == before + 1)
+        #expect(runner.refused.isEmpty)
+    }
+
+    @Test("Relance « on » partie au moment de l'entrée en vie privée : repli d'abord, puis « off », puis la vie privée, dans cet ordre")
+    func privacyEntryWithResumeInFlight() {
+        let controller = started(wanted: true)
+        #expect(runner.inFlight == .tracking(true))
+        #expect(controller.handle(.privacy(on: true), from: 1) == nil)
+        // Un ordre est en vol : la protection à −70° part tout de suite, par le chemin de repli.
+        #expect(camera.absoluteCommands == [PanTiltPosition(pan: 12, tilt: PrivacyReconciler.privacyTilt)])
+        runner.answer(.tracking(true))
+        #expect(runner.inFlight == .tracking(false))
+        runner.answer(.tracking(false))
+        // L'ordre de vie privée native part une fois la protection placée.
+        for _ in 0..<60 where runner.inFlight != .privacy(true) {
+            scheduler.advance(by: 0.1)
+        }
+        #expect(runner.inFlight == .privacy(true))
+        runner.answer(.privacy(true))
+        #expect(runner.orders == [true, false])
+        #expect(runner.privacyOrders == [true])
+        #expect(runner.refused.isEmpty)
+        #expect(store.state.aiTracking)
+    }
+
+    // MARK: - Cadence de la relecture
+
+    @Test("Relecture : après 5 « switching » de suite, retour à la cadence de 30 s")
+    func switchingReadsAreCapped() {
+        let controller = started(wanted: false)
+        defer { withExtendedLifetime(controller) {} }
+        runner.aiMode = .switching
+        runner.answer(.trackingStatus)
+        for _ in 1..<TrackingReconciler.maxSwitchingReads {
+            scheduler.advance(by: TrackingReconciler.settleDelay)
+            #expect(runner.inFlight == .trackingStatus)
+            runner.answer(.trackingStatus)
+        }
+        #expect(runner.trackingReads == TrackingReconciler.maxSwitchingReads)
+        scheduler.advance(by: TrackingReconciler.settleDelay)
+        #expect(runner.inFlight == nil)
+        scheduler.advance(by: TrackingReconciler.rereadInterval - TrackingReconciler.settleDelay)
+        #expect(runner.inFlight == .trackingStatus)
+        // Le compte repart de zéro dès qu'une lecture dit autre chose.
+        runner.aiMode = .off
+        runner.answer(.trackingStatus)
+        runner.aiMode = .switching
+        scheduler.advance(by: TrackingReconciler.rereadInterval)
+        runner.answer(.trackingStatus)
+        scheduler.advance(by: TrackingReconciler.settleDelay)
+        #expect(runner.inFlight == .trackingStatus)
+    }
+
+    @Test("Une relecture qui retourne tôt (rien ne peut partir) réarme quand même la minuterie : la boucle de 30 s ne meurt pas")
+    func earlyReadRearmsTimer() {
+        let queue = AIOrderQueue(runner: runner)
+        let control = ControlTaker(runner: queue, scheduler: scheduler, isObsbotCenterRunning: { false }, log: log.sink)
+        let tracking = TrackingReconciler(control: control, queue: queue, scheduler: scheduler, store: store, log: log.sink)
+        let allowed = Flag(true)
+        tracking.canOrder = { allowed.value }
+        tracking.reapply(reason: "essai")
+        runner.answer(.trackingStatus)
+        allowed.value = false
+        scheduler.advance(by: TrackingReconciler.rereadInterval)
+        #expect(runner.inFlight == nil)
+        #expect(runner.trackingReads == 1)
+        // Rien ne la relance : la minuterie tourne toujours, et la lecture part dès que c'est permis.
+        allowed.value = true
+        scheduler.advance(by: TrackingReconciler.rereadInterval)
+        #expect(runner.inFlight == .trackingStatus)
+    }
+}
+
+/// Un drapeau partagé avec une fermeture du réconciliateur.
+@MainActor
+private final class Flag {
+    var value: Bool
+
+    init(_ value: Bool) {
+        self.value = value
     }
 }

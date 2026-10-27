@@ -124,9 +124,11 @@ public final class PrivacyReconciler {
     /// vérifiée (spec § 6.5). Le suivi IA voulu peut reprendre (spec § 6.4 bis) : plus tôt, il se battrait avec la
     /// vérification de la position.
     public var onPositionRestored: (() -> Void)?
-    /// Le suivi IA peut être allumé : ni vie privée voulue ou en cours, ni caméra peut-être en mode natif (spec § 6.4 bis).
+    /// Le suivi IA peut être allumé : ni vie privée voulue ou en cours, ni caméra peut-être en mode natif, ni vérification
+    /// de la position rétablie en cours (`restoredPending`, sortie par le repli : la position mémorisée est renvoyée puis
+    /// relue, le suivi ramènerait l'objectif vers la personne et la vérification ne convergerait pas) (spec § 6.4 bis).
     public var allowsTracking: Bool {
-        !isActive && !mayBeNative
+        !isActive && !mayBeNative && !restoredPending
     }
 
     // MARK: - État interne

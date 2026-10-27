@@ -1739,8 +1739,10 @@ struct PrivacyReconcilerTests {
         controller.systemWoke()
         scheduler.advance(by: FakeAIRunner.loadTime + 1)
         #expect(runner.isReady)
-        // Le suivi lu allumé, donc retenu, est relancé au réveil (spec § 6.4 bis) ; sa réponse arrive avec le SDK prêt.
-        runner.answer(.tracking(true))
+        // Le suivi lu allumé, donc retenu, est relu au réveil (spec § 6.4 bis) : la lecture répond avec le SDK prêt, et aucun
+        // `on` superflu ne part.
+        #expect(runner.inFlight == nil)
+        #expect(runner.orders.isEmpty)
         runner.autoReads = true
         #expect(controller.handle(.privacy(on: true), from: 1) == nil)
         runner.answer(.tracking(false))

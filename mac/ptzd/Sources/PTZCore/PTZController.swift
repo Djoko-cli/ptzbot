@@ -168,8 +168,9 @@ public final class PTZController {
             keepAIWarm()
         }
         privacy.systemWoke()
-        // Le bus USB a pu dormir : le suivi voulu est réappliqué, puis relu (sans effet pendant la vie privée).
-        tracking.reapply(reason: "sortie de veille du Mac")
+        // Le bus USB a pu dormir : l'état réel est lu d'abord (sur une caméra qui suit encore, un « on » superflu est
+        // évité), le suivi voulu relancé s'il est lu coupé (sans effet pendant la vie privée ni sa vérification).
+        tracking.reapply(reason: "sortie de veille du Mac", readFirst: true)
     }
 
     /// ptzd démarre sans voir la caméra : son prochain branchement est une mise sous tension, pas un redémarrage de ptzd
@@ -211,13 +212,15 @@ public final class PTZController {
             }
             // Le suivi IA contrerait le joystick : coupé au premier mouvement, s'il n'est pas déjà coupé ; le choix retenu
             // devient « coupé » (spec § 6.4 bis).
+            // Un simple arrêt (0, 0) n'est pas un mouvement : il ne coupe pas le suivi et n'interrompt pas la vérification de
+            // la position rétablie, dont la fin fait reprendre le suivi.
             if pan != 0 || tilt != 0 {
                 if control.mayBeTracking {
                     control.take()
                 }
                 tracking.userMoved()
+                privacy.userMoved()
             }
-            privacy.userMoved()
             return attempt { try motion.move(pan: pan, tilt: tilt, from: client) }
         case let .zoom(value):
             if let refusal = refusal() {

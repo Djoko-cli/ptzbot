@@ -11,13 +11,17 @@ import NacelleProtocol
 /// - **La réapplication** du choix « activé » (`on`) : au branchement de la caméra (et donc au démarrage de ptzd caméra
 ///   présente), au réveil du Mac, à la sortie de la vie privée et après `aiUpdated`. Un choix « coupé » n'envoie rien :
 ///   la relecture qui suit le confirme. Un échec : un nouvel essai après `ControlTaker.retryDelay`, puis la relecture
-///   périodique.
+///   périodique. **Au réveil et après `aiUpdated`, l'état réel est lu d'abord** (la caméra suit peut-être encore : un
+///   `on` superflu serait au mieux un `switching`, au pire une perte d'accroche) ; le `on` part s'il est lu coupé, ou
+///   tout de suite si les lectures sont impossibles (utilitaire froid ou ancien) ou ratent. Au branchement et à la sortie
+///   de la vie privée, la caméra est coupée d'office : le `on` part sans lecture.
 /// - **La relecture** de l'état réel : après chaque réapplication, puis toutes les `rereadInterval` secondes, tant que la
 ///   caméra est là et l'utilitaire gardé chaud. Lu coupé alors qu'il est voulu : relancé (une fois par relecture
 ///   périodique au plus). Lu `switching` : relu un peu plus tard, sans rien conclure. L'état publié aux apps suit la
 ///   dernière lecture. Un utilitaire d'avant cet ordre (« ordre inconnu ») : plus de relecture jusqu'à `aiUpdated`.
-/// - **Jamais pendant la vie privée** (voulue, en cours, ou caméra peut-être en mode natif : `canOrder`), ni pendant un
-///   ordre de suivi (coupure, ordre des apps), ni juste après (la caméra bascule encore). Tout passe par la file de
+/// - **Jamais pendant la vie privée** (voulue, en cours, caméra peut-être en mode natif, ou vérification de la position
+///   rétablie : `canOrder`), ni pendant un ordre de suivi (coupure, ordre des apps), ni juste après (la caméra bascule
+///   encore). Tout passe par la file de
 ///   l'utilitaire, au rang des ordres de fond : derrière la vie privée, dont l'entrée ne les attend jamais (repli), et
 ///   avec une condition relue au moment de partir.
 @MainActor
@@ -27,6 +31,9 @@ public final class TrackingReconciler {
     /// Après un ordre de suivi, la caméra bascule encore : `switching` pendant environ 0,5 s, `on` dès 0,5 s (essai
     /// témoin du 28/10). Aucune lecture avant ce délai, ni après un `switching`.
     public static let settleDelay: TimeInterval = 2
+    /// Lectures `switching` de suite avant de revenir à la cadence lente : une caméra bloquée à ce mode ne fait pas boucler
+    /// la relecture toutes les `settleDelay` secondes.
+    public static let maxSwitchingReads = 5
 
     private enum Step {
         case idle
@@ -57,7 +64,12 @@ public final class TrackingReconciler {
     /// La dernière relance a réussi : la lecture qui suit la confirme, et ne relance pas si elle lit encore « coupé ».
     private var confirming = false
     /// Une réapplication est arrivée pendant un ordre de suivi : elle part à la fin de cet ordre.
-    private var deferred: String?
+    private var deferred: (reason: String, readFirst: Bool)?
+    /// Une réapplication lit l'état réel avant d'envoyer le `on` : la raison, tant que la lecture n'a pas répondu. Une
+    /// lecture ratée (ou un utilitaire qui ne sait pas lire) la fait repartir en `on` direct.
+    private var readFirstReason: String?
+    /// Lectures `switching` de suite (plafonnées par `maxSwitchingReads`).
+    private var switchingReads = 0
 
     /// Un ordre de suivi peut partir à la caméra : caméra présente, ni vie privée voulue ou en cours, ni caméra peut-être
     /// en mode natif (fourni par le contrôleur).
@@ -101,19 +113,28 @@ public final class TrackingReconciler {
     }
 
     /// Caméra présente (branchement, démarrage de ptzd), Mac sorti de veille, ou vie privée finie (position rétablie) :
-    /// le choix voulu est réappliqué, puis l'état réel relu. Sans effet pendant la vie privée : sa fin réapplique.
-    public func reapply(reason: String) {
+    /// le choix voulu est réappliqué, puis l'état réel relu. Sans effet pendant la vie privée ni la vérification de la
+    /// position rétablie : sa fin réapplique. `readFirst` : l'état réel est lu avant tout `on` (réveil, `aiUpdated`),
+    /// quand les lectures sont possibles ; sinon le `on` part directement.
+    public func reapply(reason: String, readFirst: Bool = false) {
         guard queue.supportsNativePrivacy, canOrder() else { return }
         abandonPending()
         retried = false
         guard control.state != .taking else {
             // Une coupure ou un ordre des apps est en cours : la réapplication part à sa fin (`controlFinished`).
-            deferred = reason
+            deferred = (reason, readFirst)
             return
         }
         deferred = nil
         if wanted {
-            resume(reason: reason)
+            if readFirst, readsPossible {
+                timer?.cancel()
+                timer = nil
+                readFirstReason = reason
+                read()
+            } else {
+                resume(reason: reason)
+            }
         } else {
             timer?.cancel()
             timer = nil
@@ -126,14 +147,14 @@ public final class TrackingReconciler {
     public func utilityUpdated(cameraPresent: Bool) {
         readsUnsupported = false
         guard cameraPresent else { return }
-        reapply(reason: "obsbot-ai mis à jour")
+        reapply(reason: "obsbot-ai mis à jour", readFirst: true)
     }
 
     /// Fin d'un ordre de suivi (`ControlTaker`) : une réapplication reportée part maintenant.
     public func controlFinished() {
-        guard control.state != .taking, let reason = deferred else { return }
+        guard control.state != .taking, let pending = deferred else { return }
         deferred = nil
-        reapply(reason: reason)
+        reapply(reason: pending.reason, readFirst: pending.readFirst)
     }
 
     // MARK: - Relance
@@ -209,9 +230,15 @@ public final class TrackingReconciler {
     }
 
     private func read() {
-        // Caméra absente, vie privée, utilitaire froid ou ancien : la relecture s'arrête ; le branchement, la sortie de
-        // la vie privée ou la mise à jour la relancent.
-        guard readsPossible, canOrder(), step == .idle else { return }
+        // Utilitaire froid ou ancien : la relecture s'arrête ; la mise à jour la relance. Une lecture ou une relance en
+        // cours réarme la minuterie à sa réponse.
+        guard readsPossible, step == .idle else { return }
+        // Rien ne peut partir maintenant (vie privée, vérification de la position, caméra peut-être en mode natif) : la
+        // boucle de relecture ne meurt pas pour autant, tant que la caméra est là (le branchement annule la minuterie).
+        guard canOrder() else {
+            scheduleRead(after: Self.rereadInterval)
+            return
+        }
         if control.state == .taking {
             scheduleRead(after: Self.settleDelay)
             return
@@ -237,12 +264,17 @@ public final class TrackingReconciler {
     private func readDone(_ reading: TrackingReading, epoch: Int) {
         let confirmation = confirming
         confirming = false
+        let readFirst = readFirstReason
+        readFirstReason = nil
         guard control.epoch == epoch, control.state != .taking, canOrder() else {
             // Un ordre de suivi est parti depuis la lecture, ou la vie privée est voulue : elle ne dit plus rien.
             if canOrder() {
                 scheduleRead(after: Self.rereadInterval)
             }
             return
+        }
+        if case .mode(.switching) = reading {} else {
+            switchingReads = 0
         }
         switch reading {
         case .mode(.on):
@@ -268,18 +300,36 @@ public final class TrackingReconciler {
             retried = false
             resume(reason: "relecture")
         case .mode(.switching):
-            // La caméra bascule : rien à conclure, relu un peu plus tard.
+            // La caméra bascule : rien à conclure, relu un peu plus tard (cinq fois au plus de suite : une caméra bloquée à
+            // ce mode ne fait pas boucler la relecture).
+            switchingReads += 1
             confirming = confirmation
-            scheduleRead(after: Self.settleDelay)
+            if switchingReads >= Self.maxSwitchingReads {
+                switchingReads = 0
+                scheduleRead(after: Self.rereadInterval)
+            } else {
+                scheduleRead(after: Self.settleDelay)
+            }
         case .failed(.unknownOrder):
             log("Suivi IA : obsbot-ai ne sait pas lire le mode IA ; plus de relecture jusqu'à sa mise à jour.")
             readsUnsupported = true
+            resumeAfterFailedRead(readFirst)
         case let .failed(result):
             if result != AIOrderQueue.discarded {
                 log("Suivi IA : mode IA illisible (\(result.userDescription)).")
             }
             scheduleRead(after: Self.rereadInterval)
+            if result != AIOrderQueue.discarded {
+                resumeAfterFailedRead(readFirst)
+            }
         }
+    }
+
+    /// La lecture d'une réapplication (réveil, `aiUpdated`) n'a rien appris : le `on` part comme sans lecture.
+    private func resumeAfterFailedRead(_ reason: String?) {
+        guard let reason, wanted, canOrder(), control.state != .taking else { return }
+        retried = false
+        resume(reason: reason)
     }
 
     // MARK: - Outils
@@ -289,6 +339,8 @@ public final class TrackingReconciler {
         ticket += 1
         step = .idle
         confirming = false
+        readFirstReason = nil
+        switchingReads = 0
         control.resumePending = false
     }
 
