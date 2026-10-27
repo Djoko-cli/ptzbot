@@ -58,6 +58,12 @@ private final class ExposureOutcome {
     var value: ExposureReading?
 }
 
+/// Résultat d'une lecture du mode IA.
+@MainActor
+private final class TrackingOutcome {
+    var value: TrackingReading?
+}
+
 /// Réponse « ok » à chaque ordre, après un démarrage de 0,2 s qui laisse passer du bruit sur les deux sorties.
 private let answering = """
     echo "bruit du SDK"
@@ -912,6 +918,36 @@ struct ResidentAIRunnerTests {
         #expect(outcome.value == nil)
         scheduler.advance(by: 0.2)
         #expect(outcome.value == .failed(.timeout))
+        await cleanUp(runner, serve)
+    }
+
+    @Test("tracking status : on, off et switching se lisent tels quels ; err 2 garde l'utilitaire ; un mot inconnu est un échec ; err 3 : ordre inconnu")
+    func trackingStatus() async throws {
+        let serve = try FakeServe("""
+            echo "obsbot-ai: ready"
+            for reply in "ok on" "ok off" "ok switching" "err 2" "ok flou" "err 3"; do
+                read order
+                echo "$order" >> "$dir/orders"
+                echo "obsbot-ai: $reply"
+            done
+            """)
+        let runner = runner(serve, scheduler: DispatchScheduler())
+        var readings: [TrackingReading] = []
+        for index in 0..<6 {
+            let outcome = TrackingOutcome()
+            runner.readTracking { outcome.value = $0 }
+            _ = await eventually { outcome.value != nil }
+            readings.append(outcome.value ?? .failed(.timeout))
+            if index == 3 {
+                // Une lecture ratée ne rend pas la session douteuse : l'utilitaire reste.
+                #expect(runner.hasHelper)
+            }
+        }
+        #expect(readings == [
+            .mode(.on), .mode(.off), .mode(.switching), .failed(.sdkError), .failed(.sdkError), .failed(.unknownOrder),
+        ])
+        #expect(serve.orders == Array(repeating: "tracking status", count: 6))
+        #expect(serve.starts.count == 1)
         await cleanUp(runner, serve)
     }
 

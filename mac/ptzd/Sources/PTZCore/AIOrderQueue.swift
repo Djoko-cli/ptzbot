@@ -9,23 +9,39 @@ import Foundation
 /// l'attente au pire est donc d'un seul ordre d'exposition. Tant qu'il est en cours, `isReady` est faux : l'entrée en vie
 /// privée prend alors le repli (−70° tout de suite) au lieu d'attendre derrière lui.
 ///
+/// **Les ordres de fond du suivi IA** (relecture du mode réel, relance du suivi voulu : `TrackingReconciler`) passent
+/// derrière la vie privée et le suivi, et devant l'exposition. Leur condition est relue au moment de partir : fausse (vie
+/// privée voulue ou en cours, ordre de suivi entre-temps, session abandonnée), l'ordre n'est jamais envoyé, et son
+/// rappel rend `launchFailed`. Parti, il rend `isReady` faux, comme un ordre d'exposition : la vie privée ne l'attend
+/// jamais.
+///
 /// `reset` passe à l'utilitaire : l'ordre en cours échoue, et l'ordre suivant de la file part sur un utilitaire neuf.
 @MainActor
 public final class AIOrderQueue: AIRunner {
     private typealias Start = (@escaping @MainActor @Sendable () -> Void) -> Void
 
-    /// Un ordre en attente. `exposure` : un ordre d'exposition, qui cède la place aux autres et que `dropQueuedExposure`
-    /// peut jeter.
+    /// Le rang d'un ordre : la vie privée et le suivi d'abord (dans l'ordre d'arrivée), puis les ordres de fond du suivi,
+    /// puis l'exposition.
+    private enum Rank: Int {
+        case main = 0
+        case tracking = 1
+        case exposure = 2
+    }
+
+    /// Un ordre en attente. Un ordre d'exposition cède la place aux autres, et `dropQueuedExposure` peut le jeter.
     private struct Job {
-        let exposure: Bool
+        let rank: Rank
         let start: Start
     }
+
+    /// Rappel d'un ordre de fond écarté à son tour (sa condition est devenue fausse).
+    static let discarded = AIResult.launchFailed("ordre de fond du suivi IA écarté")
 
     private let runner: any AIRunner
     private var jobs: [Job] = []
     private var busy = false
-    /// L'ordre parti est un ordre d'exposition.
-    private var exposureInFlight = false
+    /// Le rang de l'ordre parti (nil : aucun).
+    private var inFlight: Rank?
 
     public init(runner: any AIRunner) {
         self.runner = runner
@@ -61,8 +77,49 @@ public final class AIOrderQueue: AIRunner {
         }
     }
 
+    /// La lecture du mode IA, sans condition (rang des ordres de fond).
+    public func readTracking(completion: @escaping @MainActor @Sendable (TrackingReading) -> Void) {
+        readTracking(when: { true }, completion: completion)
+    }
+
+    /// Lecture de fond du mode IA : `allowed` est relue quand vient son tour ; fausse, rien ne part.
+    public func readTracking(
+        when allowed: @escaping @MainActor () -> Bool,
+        completion: @escaping @MainActor @Sendable (TrackingReading) -> Void
+    ) {
+        enqueue(rank: .tracking) { [runner] done in
+            guard allowed() else {
+                completion(.failed(Self.discarded))
+                done()
+                return
+            }
+            runner.readTracking { reading in
+                completion(reading)
+                done()
+            }
+        }
+    }
+
+    /// Relance de fond du suivi IA voulu (`on`) : `allowed` est relue quand vient son tour ; fausse, rien ne part.
+    public func resumeTracking(
+        when allowed: @escaping @MainActor () -> Bool,
+        completion: @escaping @MainActor @Sendable (AIResult) -> Void
+    ) {
+        enqueue(rank: .tracking) { [runner] done in
+            guard allowed() else {
+                completion(Self.discarded)
+                done()
+                return
+            }
+            runner.run(on: true) { result in
+                completion(result)
+                done()
+            }
+        }
+    }
+
     public func readExposure(completion: @escaping @MainActor @Sendable (ExposureReading) -> Void) {
-        enqueue(exposure: true) { [runner] done in
+        enqueue(rank: .exposure) { [runner] done in
             runner.readExposure { reading in
                 completion(reading)
                 done()
@@ -71,7 +128,7 @@ public final class AIOrderQueue: AIRunner {
     }
 
     public func runExposure(_ setting: ExposureSetting, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
-        enqueue(exposure: true) { [runner] done in
+        enqueue(rank: .exposure) { [runner] done in
             runner.runExposure(setting) { result in
                 completion(result)
                 done()
@@ -81,10 +138,13 @@ public final class AIOrderQueue: AIRunner {
 
     public var supportsNativePrivacy: Bool { runner.supportsNativePrivacy }
 
-    /// Prêt pour un ordre immédiat : faux tant qu'un ordre d'exposition est parti, la vie privée attendrait derrière lui.
-    public var isReady: Bool { runner.isReady && !exposureInFlight }
+    /// Prêt pour un ordre immédiat : faux tant qu'un ordre d'exposition ou de fond du suivi est parti, la vie privée
+    /// attendrait derrière lui.
+    public var isReady: Bool { runner.isReady && (inFlight ?? .main) == .main }
 
-    public var busyWithExposure: Bool { exposureInFlight }
+    public var busyWithExposure: Bool { inFlight == .exposure }
+
+    public var busyWithTracking: Bool { inFlight == .tracking }
 
     public var keepsWarm: Bool { runner.keepsWarm }
 
@@ -100,30 +160,30 @@ public final class AIOrderQueue: AIRunner {
     /// recompilation, ou vie privée voulue). Ils ne partiront jamais ; leur réponse ne sera jamais rendue, personne ne
     /// l'attend. Un ordre déjà parti va à son terme.
     public func dropQueuedExposure() {
-        jobs.removeAll { $0.exposure }
+        jobs.removeAll { $0.rank == .exposure }
     }
 
     /// Le rappel passe avant l'ordre suivant : un ordre donné par le rappel prend sa place au bout de la file, derrière
     /// ceux qui attendaient déjà de même rang, et les rappels arrivent dans l'ordre des ordres.
-    private func enqueue(exposure: Bool = false, _ start: @escaping Start) {
-        jobs.append(Job(exposure: exposure, start: start))
+    private func enqueue(rank: Rank = .main, _ start: @escaping Start) {
+        jobs.append(Job(rank: rank, start: start))
         pump()
     }
 
     private func pump() {
         guard !busy, !jobs.isEmpty else { return }
         busy = true
-        // Le premier ordre qui n'est pas d'exposition ; à défaut, le premier ordre.
-        let index = jobs.firstIndex { !$0.exposure } ?? 0
+        // Le premier ordre du meilleur rang (le plus ancien à rang égal).
+        guard let best = jobs.map(\.rank.rawValue).min(), let index = jobs.firstIndex(where: { $0.rank.rawValue == best }) else { return }
         let job = jobs.remove(at: index)
-        exposureInFlight = job.exposure
+        inFlight = job.rank
         let release = Release()
         job.start { [weak self] in
             // Une seule libération par ordre, même si l'utilitaire rappelait deux fois.
             guard !release.done, let self else { return }
             release.done = true
             busy = false
-            exposureInFlight = false
+            inFlight = nil
             pump()
         }
     }

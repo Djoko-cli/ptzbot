@@ -5,10 +5,10 @@ import Foundation
 /// spec § 6.9), il reste chargé tant que ptzd tourne et n'est arrêté que par une réinitialisation, une mise à jour ou un
 /// incident, après quoi ptzd le relance (`prewarm`).
 ///
-/// Protocole : un ordre par ligne (`on`, `off`, `privacy on`, `privacy off`, `privacy status`, `exposure status` ou
+/// Protocole : un ordre par ligne (`on`, `off`, `tracking status`, `privacy on`, `privacy off`, `privacy status`, `exposure status` ou
 /// `exposure set <obturation> <auto|manual>`) sur l'entrée de
 /// l'utilitaire. Sur sa sortie, les lignes préfixées par `obsbot-ai: ` sont des réponses (`ready` une fois le SDK prêt,
-/// puis `ok`, `ok <état> [<inclinaison>]` pour `privacy status`, `ok <obturation> <auto|manual>` pour `exposure status`, ou
+/// puis `ok`, `ok <on|off|switching>` pour `tracking status`, `ok <état> [<inclinaison>]` pour `privacy status`, `ok <obturation> <auto|manual>` pour `exposure status`, ou
 /// `err <code> [<inclinaison>]` par ordre) ; toute
 /// autre ligne est du bruit du SDK, ajouté au fichier de sortie. L'utilitaire se termine quand son entrée se ferme, ce
 /// qui arrive aussi si ptzd meurt.
@@ -155,6 +155,23 @@ public final class ResidentAIRunner: AIRunner {
 
     public func runPrivacy(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
         submit(.privacy(on: on)) { completion(Self.result(of: $0)) }
+    }
+
+    /// `tracking status` : « ok on », « ok off » ou « ok switching ». Un autre mot est un échec, jamais un mode deviné.
+    public func readTracking(completion: @escaping @MainActor @Sendable (TrackingReading) -> Void) {
+        submit(.trackingStatus) { [weak self] reply in
+            switch reply {
+            case let .ok(words):
+                if words.count == 1, let mode = TrackingMode(rawValue: String(words[0])) {
+                    completion(.mode(mode))
+                } else {
+                    self?.log("obsbot-ai : mode IA illisible (« \(words.joined(separator: " ")) »).")
+                    completion(.failed(.sdkError))
+                }
+            case let .failed(result, _):
+                completion(.failed(result))
+            }
+        }
     }
 
     /// `privacy status` : « ok run 69.8 » ou « ok privacy 84.9 » (l'inclinaison peut manquer), « err 2 84.9 » si l'état
@@ -402,8 +419,8 @@ public final class ResidentAIRunner: AIRunner {
             if code == 1 {
                 // Caméra introuvable : l'utilitaire sort de lui-même.
                 fail(.cameraNotFound)
-            } else if code == 2, order?.order == .privacyStatus || order?.order == .exposureStatus {
-                // Lecture ratée (l'état, ou le réglage d'exposition) : la session n'est pas douteuse, l'utilitaire reste
+            } else if code == 2, order?.order == .privacyStatus || order?.order == .exposureStatus || order?.order == .trackingStatus {
+                // Lecture ratée (l'état, le mode IA ou le réglage d'exposition) : la session n'est pas douteuse, l'utilitaire reste
                 // (constat D).
                 finish(.failed(.sdkError, Array(words.dropFirst(2))))
             } else {

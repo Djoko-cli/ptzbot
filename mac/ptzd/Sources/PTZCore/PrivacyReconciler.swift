@@ -120,6 +120,14 @@ public final class PrivacyReconciler {
     /// La vie privée vient de finir (fin de la sortie, caméra lue éveillée ou jamais endormie) : l'exposition voulue peut
     /// être réappliquée (spec § 6.11).
     public var onEnded: (() -> Void)?
+    /// La vie privée est finie et la position d'avant rétablie : reprise d'elle-même par la caméra, ou renvoyée puis
+    /// vérifiée (spec § 6.5). Le suivi IA voulu peut reprendre (spec § 6.4 bis) : plus tôt, il se battrait avec la
+    /// vérification de la position.
+    public var onPositionRestored: (() -> Void)?
+    /// Le suivi IA peut être allumé : ni vie privée voulue ou en cours, ni caméra peut-être en mode natif (spec § 6.4 bis).
+    public var allowsTracking: Bool {
+        !isActive && !mayBeNative
+    }
 
     // MARK: - État interne
 
@@ -241,6 +249,8 @@ public final class PrivacyReconciler {
     private var plugged = false
     /// La dernière lecture n'a pas rendu l'état (lecture ratée, ou témoin seul) : l'entrée suivante passe par le repli.
     private var stateUnreadable = false
+    /// La vie privée vient de finir et la position rétablie n'est pas encore vérifiée : `onPositionRestored` attend.
+    private var restoredPending = false
     /// La dernière inclinaison lue par le SDK (positive vers le bas), pour comparer le retour de la caméra à `saved`.
     private var lastPitch: Double?
     /// Journal : début de la séquence en cours (demande, réapplication), et du dernier ordre natif.
@@ -324,6 +334,8 @@ public final class PrivacyReconciler {
     public func abandonSession() {
         ticket += 1
         stopStep()
+        // Une vérification de la position rétablie s'arrête : le branchement (ou la mise à jour) réapplique le suivi.
+        restoredPending = false
     }
 
     /// Branchement ou débranchement de la caméra (`abandonSession` d'abord). Au branchement, une vie privée en vigueur
@@ -439,6 +451,7 @@ public final class PrivacyReconciler {
         guard !isActive, case .verifying = step else { return }
         stopStep()
         lastTarget = nil
+        positionRestored()
     }
 
     // MARK: - Demandes
@@ -474,6 +487,7 @@ public final class PrivacyReconciler {
         }
         // Entrée demandée : la seule qui écrit `saved`.
         begin("entrée demandée (client \(client))")
+        restoredPending = false
         try? motion.stop()
         zoom.cancelPending()
         saved = motion.position.map { SavedPosition(pan: $0.pan, tilt: $0.tilt, zoom: zoom.value) }
@@ -661,6 +675,10 @@ public final class PrivacyReconciler {
             // La vie privée passe devant les ordres d'exposition en attente, mais pas devant celui qui est parti.
             return "ordre d'exposition en cours"
         }
+        if runner.busyWithTracking {
+            // De même pour une relecture ou une relance de fond du suivi IA (spec § 6.4 bis) : jamais attendue.
+            return "relecture ou relance du suivi IA en cours"
+        }
         if !runner.isReady {
             // Un ordre attendrait la session neuve du SDK (environ 4 s) : l'inclinaison protège tout de suite.
             return "SDK pas encore prêt"
@@ -706,6 +724,7 @@ public final class PrivacyReconciler {
                     lastTarget = nil
                     endPrivacy()
                     end("levée, caméra revenue d'elle-même à sa position d'avant")
+                    positionRestored()
                     return
                 }
                 pause(Self.riseMargin) { $0.reconcile() }
@@ -1175,9 +1194,17 @@ public final class PrivacyReconciler {
         switching = nil
         requester = nil
         pendingTake = false
+        restoredPending = true
         persist()
         zoom.refresh()
         onEnded?()
+    }
+
+    /// La position d'avant est rétablie (ou sa vérification abandonnée) : `onPositionRestored`, une seule fois.
+    private func positionRestored() {
+        guard restoredPending, !isActive else { return }
+        restoredPending = false
+        onPositionRestored?()
     }
 
     /// Sortie rapide (spec § 6.5 bis, « Accélération ») : la caméra vient d'être lue éveillée, nacelle immobile. Position
@@ -1236,6 +1263,14 @@ public final class PrivacyReconciler {
     /// on renvoie l'ordre. Hors vie privée, au plus `maxResends` fois ; en vie privée, jusqu'à ce que le tilt soit
     /// atteint.
     private func checkTarget(resends: Int) {
+        checkTargetStep(resends: resends)
+        // Hors vie privée, la vérification de la position rétablie est finie (atteinte, illisible, ou renvois épuisés).
+        if step != .verifying {
+            positionRestored()
+        }
+    }
+
+    private func checkTargetStep(resends: Int) {
         step = .idle
         guard let target = lastTarget, !(isActive && mayBeNative) else { return }
         let position = motion.position

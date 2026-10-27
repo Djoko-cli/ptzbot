@@ -18,13 +18,19 @@
 // `31 manual` ou `31 auto` ; `exposure-set` applique le couple donné (en `auto`, l'obturation donnée est celle
 // d'origine, la caméra l'ignore tant qu'elle reste automatique). Le gain n'est ni lu ni écrit : la caméra garde celui
 // d'OBSBOT Center. Mêmes codes de sortie que `on` et `off`.
-// obsbot-ai serve : garde le SDK chargé et lit les ordres `on`, `off`, `privacy on`, `privacy off`,
+// obsbot-ai tracking-status : lit le mode IA réel de la caméra (cameraGetCameraStatusU, champ `tiny.ai_mode` pour la
+// Tiny 2 ; essai témoin du 28/10 : 0 coupé, 2 après `on` dès 0,5 s, 6 pendant ~0,5 s juste après la coupure) et
+// l'écrit sur la sortie : `on` (suivi d'une personne, ou tout autre mode de suivi actif), `off` (aucun) ou `switching`
+// (bascule en cours : rien à conclure, ptzd relit plus tard). Une valeur hors de l'énumération du SDK est une erreur
+// (code 2), valeur brute au journal. Mêmes codes de sortie que `on` et `off`.
+// obsbot-ai serve : garde le SDK chargé et lit les ordres `on`, `off`, `tracking status`, `privacy on`, `privacy off`,
 // `privacy status`, `exposure status` ou `exposure set <obturation> <auto|manual>` sur l'entrée, un par ligne ; répond sur la sortie par « obsbot-ai: ready », puis par ordre
 // « obsbot-ai: ok » ou « obsbot-ai: err <code> », avec les codes ci-dessus : 1 (caméra introuvable), 2 (erreur du
 // SDK), 3 (ordre inconnu, d'un ptzd plus récent que cet utilitaire). `privacy status` répond « obsbot-ai: ok run
 // 69.8 » (l'inclinaison absente si elle ne se lit pas) ; si l'état ne se lit pas, « obsbot-ai: err 2 », suivi de
 // l'inclinaison si elle se lit (« obsbot-ai: err 2 84.9 »). `exposure status` répond « obsbot-ai: ok 31 manual » (ou
-// « err 2 » si la lecture est refusée) ; `exposure set` répond « ok » ou « err 2 ». Se termine quand l'entrée se ferme. Lancé par ptzd.
+// « err 2 » si la lecture est refusée) ; `exposure set` répond « ok » ou « err 2 ». `tracking status` répond « obsbot-ai: ok
+// on », « ok off » ou « ok switching » (ou « err 2 »). Se termine quand l'entrée se ferme. Lancé par ptzd.
 // En mode serve, la vraie sortie standard est réservée aux réponses : tout ce que le SDK écrit sur la
 // sortie standard va vers l'erreur standard (le journal), pour ne jamais se mêler aux réponses.
 // En mode serve, un fil surveille aussi le parent : si ptzd meurt pendant que le SDK bloque le fil principal,
@@ -98,6 +104,35 @@ static int32_t readPrivacy(const std::shared_ptr<Device> &tiny2, const char **st
     }
 }
 
+// Mode IA réel de la caméra : `mode` reçoit « on », « off » ou « switching ». La Tiny 2 porte son mode dans la partie
+// `tiny` de CameraStatus (`ai_mode`, valeurs de AiWorkModeType), lue en 1 à 4 ms (essai témoin du 28/10). Tout mode de
+// suivi (une personne, un groupe, la main, le tableau, le bureau, et ceux des autres modèles) vaut « on » ; une valeur
+// hors de l'énumération est une erreur, avec la valeur brute dans le journal : jamais un mode deviné.
+static int32_t readTracking(const std::shared_ptr<Device> &tiny2, const char **mode) {
+    Device::CameraStatus status;
+    std::memset(&status, 0, sizeof(status));
+    const int32_t result = tiny2->cameraGetCameraStatusU(status);
+    if (result != RM_RET_OK) {
+        std::fprintf(stderr, "obsbot-ai : lecture du mode IA refusée (%d)\n", result);
+        return result;
+    }
+    switch (status.tiny.ai_mode) {
+    case Device::AiWorkModeNone: *mode = "off"; return RM_RET_OK;
+    case Device::AiWorkModeSwitching: *mode = "switching"; return RM_RET_OK;
+    case Device::AiWorkModeGroup:
+    case Device::AiWorkModeHuman:
+    case Device::AiWorkModeHand:
+    case Device::AiWorkModeWhiteBoard:
+    case Device::AiWorkModeDesk:
+    case Device::AiWorkModeSpeech:
+    case Device::AiWorkModePortraitTrack:
+    case Device::AiWorkModeCustomize: *mode = "on"; return RM_RET_OK;
+    default:
+        std::fprintf(stderr, "obsbot-ai : mode IA brut inattendu (%d)\n", status.tiny.ai_mode);
+        return RM_RET_ERR;
+    }
+}
+
 // Inclinaison de la nacelle lue par le SDK (`xyz[1]`, en degrés, positive vers le bas : environ 70 à −70° UVC, 85 en
 // vie privée native), sans réveiller la caméra (mesuré le 19/10). Le second témoin de l'état : faux si illisible.
 static bool readPitch(const std::shared_ptr<Device> &tiny2, float *pitch) {
@@ -123,7 +158,7 @@ static std::string describe(const char *state, bool hasPitch, float pitch) {
 
 // Un ordre du mode serve ou du mode à un coup. Les ordres du mode serve s'écrivent « privacy on » ; ceux du mode
 // à un coup « privacy-on » (un seul argument).
-enum class Order { TrackingOn, TrackingOff, PrivacyOn, PrivacyOff, PrivacyStatus, ExposureStatus, ExposureSet, Unknown };
+enum class Order { TrackingOn, TrackingOff, TrackingStatus, PrivacyOn, PrivacyOff, PrivacyStatus, ExposureStatus, ExposureSet, Unknown };
 
 // Un ordre et ses arguments : l'obturation et le mode de `ExposureSet`.
 struct Command {
@@ -135,6 +170,7 @@ struct Command {
 static Order parseOrder(const std::string &text) {
     if (text == "on") return Order::TrackingOn;
     if (text == "off") return Order::TrackingOff;
+    if (text == "tracking status" || text == "tracking-status") return Order::TrackingStatus;
     if (text == "privacy on" || text == "privacy-on") return Order::PrivacyOn;
     if (text == "privacy off" || text == "privacy-off") return Order::PrivacyOff;
     if (text == "privacy status" || text == "privacy-status") return Order::PrivacyStatus;
@@ -174,7 +210,7 @@ static Command parseServeLine(const std::string &line) {
         return command;
     }
     // Les ordres du mode serve n'acceptent que les formes à espace (« privacy on »).
-    if (line.rfind("privacy-", 0) != 0 && line.rfind("exposure-", 0) != 0) {
+    if (line.rfind("privacy-", 0) != 0 && line.rfind("exposure-", 0) != 0 && line.rfind("tracking-", 0) != 0) {
         command.order = parseOrder(line);
     }
     return command;
@@ -194,6 +230,8 @@ static Command parseArguments(int argc, char **argv) {
 // Ce que rend une lecture de l'état (`PrivacyStatus`) : l'état lu (nul sinon) et l'inclinaison, le second témoin.
 struct Reading {
     const char *state = nullptr;
+    // Lecture du mode IA (`TrackingStatus`) : « on », « off » ou « switching » (nul sinon).
+    const char *tracking = nullptr;
     bool hasPitch = false;
     float pitch = 0;
     // Lecture de l'exposition (`ExposureStatus`).
@@ -234,6 +272,7 @@ static int32_t execute(const std::shared_ptr<Device> &tiny2, const Command &comm
     switch (command.order) {
     case Order::TrackingOn: return setTracking(tiny2, true);
     case Order::TrackingOff: return setTracking(tiny2, false);
+    case Order::TrackingStatus: return readTracking(tiny2, &reading->tracking);
     case Order::PrivacyOn: return setPrivacy(tiny2, true);
     case Order::PrivacyOff: return setPrivacy(tiny2, false);
     case Order::PrivacyStatus: {
@@ -308,6 +347,8 @@ static int serve() {
             reply(replies, ("ok " + describe(reading.state, reading.hasPitch, reading.pitch)).c_str());
         } else if (reading.hasExposure) {
             reply(replies, ("ok " + describeExposure(reading)).c_str());
+        } else if (reading.tracking != nullptr) {
+            reply(replies, (std::string("ok ") + reading.tracking).c_str());
         } else {
             reply(replies, "ok");
         }
@@ -323,7 +364,7 @@ int main(int argc, char **argv) {
     // Le mode à un coup n'accepte que les formes sans espace (« privacy-on », « exposure-set 31 auto » en trois arguments).
     const Command command = parseArguments(argc, argv);
     if (command.order == Order::Unknown) {
-        std::fprintf(stderr, "usage : obsbot-ai on|off|privacy-on|privacy-off|privacy-status|exposure-status|exposure-set <obturation> <auto|manual>|serve\n");
+        std::fprintf(stderr, "usage : obsbot-ai on|off|tracking-status|privacy-on|privacy-off|privacy-status|exposure-status|exposure-set <obturation> <auto|manual>|serve\n");
         return 3;
     }
     auto tiny2 = findTiny2();
@@ -343,6 +384,8 @@ int main(int argc, char **argv) {
     switch (command.order) {
     case Order::TrackingOn: std::printf("obsbot-ai : suivi IA allumé\n"); break;
     case Order::TrackingOff: std::printf("obsbot-ai : suivi IA coupé\n"); break;
+    // Le mode lu (« on », « off » ou « switching »), pour un script ou un essai à la main.
+    case Order::TrackingStatus: std::printf("%s\n", reading.tracking); break;
     case Order::PrivacyOn: std::printf("obsbot-ai : vie privée allumée\n"); break;
     case Order::PrivacyOff: std::printf("obsbot-ai : vie privée coupée\n"); break;
     // L'état et l'inclinaison (« privacy 84.9 »), pour un script ou un essai à la main.

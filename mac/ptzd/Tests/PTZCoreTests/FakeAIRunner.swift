@@ -3,6 +3,7 @@ import Testing
 @testable import PTZCore
 
 /// obsbot-ai simulé, fidèle au vrai `ResidentAIRunner` et à la vraie caméra (spec § 6.5 bis, mesures du 19/10) :
+/// - **le mode IA réel** (`aiMode`) : un ordre de suivi qui agit le change, `tracking status` le lit ;
 /// - **l'exposition** (spec § 6.11) : un réglage simulé (`exposure`), que `exposure set` change quand il agit, et que
 ///   `exposure status` lit (ou `exposureUnreadable`) ; une coupure d'alimentation (`powerCycle`) fait oublier le mode
 ///   automatique à la caméra, comme le ferait un redémarrage ;
@@ -27,6 +28,7 @@ import Testing
 final class FakeAIRunner: AIRunner {
     enum Order: Equatable {
         case tracking(Bool)
+        case trackingStatus
         case privacy(Bool)
         case status
         case exposureStatus
@@ -37,6 +39,7 @@ final class FakeAIRunner: AIRunner {
         case result(@MainActor @Sendable (AIResult) -> Void)
         case reading(@MainActor @Sendable (PrivacyReading) -> Void)
         case exposureReading(@MainActor @Sendable (ExposureReading) -> Void)
+        case trackingReading(@MainActor @Sendable (TrackingReading) -> Void)
     }
 
     /// Délais mesurés sur la vraie caméra (19/10).
@@ -53,6 +56,8 @@ final class FakeAIRunner: AIRunner {
 
     /// État réel simulé de la caméra.
     var state: CameraRunState = .run
+    /// Mode IA réel simulé : coupé au départ ; un ordre de suivi qui agit le change, `tracking status` le lit.
+    var aiMode: TrackingMode = .off
     /// L'utilitaire reste chargé tant que ptzd tourne (ptzd lancé avec le SDK, spec § 6.9) : `prewarm` ouvre alors une
     /// session, prête au bout de `loadTime` (4 s mesurés), sans aucun ordre. Faux : `prewarm` ne fait que compter, comme
     /// avant, et seul un ordre ouvre une session.
@@ -66,6 +71,9 @@ final class FakeAIRunner: AIRunner {
     var pitchUnreadable = false
     /// Les lectures de l'état répondent seules, tout de suite, avec l'état simulé.
     var autoReads = false
+    /// Les lectures du mode IA répondent seules, avec le mode simulé : tout de suite si le SDK est prêt, sinon quand la
+    /// session préparée l'est (comme le vrai, qui attend « ready »).
+    var autoTrackingReads = false
     /// Réglage d'exposition simulé de la caméra : manuel, obturation 31 au départ (essai du 20/10).
     var exposure = ExposureSetting(shutter: 31, auto: false)
     /// `exposure status` ne sait pas lire le réglage : `err 2`.
@@ -123,6 +131,10 @@ final class FakeAIRunner: AIRunner {
     var exposureReads: Int {
         received.filter { $0 == .exposureStatus }.count
     }
+    /// Lectures du mode IA reçues (`tracking status`).
+    var trackingReads: Int {
+        received.filter { $0 == .trackingStatus }.count
+    }
     /// Lectures de l'état réel reçues.
     var statusReads: Int {
         received.filter { $0 == .status }.count
@@ -156,6 +168,8 @@ final class FakeAIRunner: AIRunner {
         camera?.position = PanTiltPosition(pan: 0, tilt: 0)
         // Le redémarrage fait oublier à la caméra le mode automatique (le gain et l'obturation restent).
         exposure.auto = false
+        // Et le suivi IA : elle redémarre coupée (un test peut la faire démarrer en suivi).
+        aiMode = .off
     }
 
     /// L'utilitaire s'est arrêté après son délai d'inactivité : la session est fermée, le SDK n'est plus prêt ; le
@@ -184,6 +198,15 @@ final class FakeAIRunner: AIRunner {
         }
     }
 
+    func readTracking(completion: @escaping @MainActor @Sendable (TrackingReading) -> Void) {
+        let wasReady = isReady
+        accept(.trackingStatus, .trackingReading(completion))
+        guard autoTrackingReads, current?.order == .trackingStatus else { return }
+        if wasReady || !waitingForReady {
+            respond(.success, effect: false)
+        }
+    }
+
     func readExposure(completion: @escaping @MainActor @Sendable (ExposureReading) -> Void) {
         accept(.exposureStatus, .exposureReading(completion))
     }
@@ -202,13 +225,22 @@ final class FakeAIRunner: AIRunner {
             return
         }
         let generation = sessionGeneration
+        waitingForReady = true
         scheduler.schedule(after: Self.loadTime) { [weak self] in
             guard let self, generation == sessionGeneration, sessionOpen else { return }
             sessionAnswered = true
+            waitingForReady = false
+            if autoTrackingReads, current?.order == .trackingStatus {
+                respond(.success, effect: false)
+            }
         }
     }
 
+    /// Une session préparée cherche encore la caméra (« ready » pas encore dit).
+    private var waitingForReady = false
+
     private func openSession() {
+        waitingForReady = false
         sessionOpen = true
         sessionAnswered = false
         sessionGeneration += 1
@@ -256,6 +288,7 @@ final class FakeAIRunner: AIRunner {
             case let .result(done): done(refusal)
             case let .reading(done): done(.failed(refusal, pitch: nil))
             case let .exposureReading(done): done(.failed(refusal))
+            case let .trackingReading(done): done(.failed(refusal))
             }
             return
         }
@@ -274,7 +307,7 @@ final class FakeAIRunner: AIRunner {
         switch result {
         case .timeout, .unknownOrder:
             sessionOpen = false
-        case .sdkError where pending.order != .status && pending.order != .exposureStatus:
+        case .sdkError where pending.order != .status && pending.order != .exposureStatus && pending.order != .trackingStatus:
             sessionOpen = false
         case .launchFailed:
             break
@@ -287,6 +320,9 @@ final class FakeAIRunner: AIRunner {
         if effect, case let .exposure(setting) = pending.order {
             exposure = setting
         }
+        if effect, case let .tracking(on) = pending.order {
+            aiMode = on ? .on : .off
+        }
         switch pending.completion {
         case let .result(done):
             done(result)
@@ -298,6 +334,8 @@ final class FakeAIRunner: AIRunner {
             } else {
                 done(.failed(result, pitch: nil))
             }
+        case let .trackingReading(done):
+            done(result == .success ? .mode(aiMode) : .failed(result))
         case let .exposureReading(done):
             if result == .success, !exposureUnreadable {
                 done(.setting(exposure))

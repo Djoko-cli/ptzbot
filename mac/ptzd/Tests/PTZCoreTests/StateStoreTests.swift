@@ -97,6 +97,21 @@ struct StateStoreTests {
         #expect(loaded.exposureOrigin == nil)
     }
 
+    @Test("Le suivi IA voulu : aller-retour, écrit sous « aiTracking » seulement s'il est activé ; absent, il se lit « coupé »")
+    func trackingRoundTrip() throws {
+        let store = JSONFileStateStore(url: url, log: { _ in })
+        let state = PersistedState(privacy: false, saved: nil, aiTracking: true)
+        try store.save(state)
+        #expect(store.load() == state)
+        #expect(try String(contentsOf: url, encoding: .utf8).contains(#""aiTracking" : true"#))
+        try store.save(PersistedState(privacy: false, saved: nil))
+        #expect(try !String(contentsOf: url, encoding: .utf8).contains("aiTracking"))
+        try Data(#"{"native":false,"privacy":false}"#.utf8).write(to: url)
+        #expect(!store.load().aiTracking)
+        try Data(#"{"aiTracking":"flou","native":false,"privacy":false}"#.utf8).write(to: url)
+        #expect(!store.load().aiTracking)
+    }
+
     @Test("Fichier absent : pas de vie privée")
     func missingFile() {
         let store = JSONFileStateStore(url: url, log: { _ in })

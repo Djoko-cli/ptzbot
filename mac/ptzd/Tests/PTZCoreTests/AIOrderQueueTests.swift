@@ -136,6 +136,64 @@ struct AIOrderQueueTests {
         #expect(runner.inFlight == .status)
     }
 
+    @Test("Ordres de fond du suivi IA : derrière la vie privée et le suivi, même donnés avant ; devant l'exposition")
+    func trackingBackgroundRank() {
+        let queue = AIOrderQueue(runner: runner)
+        let results = QueueResults()
+        queue.readExposure { _ in results.values.append("exposition") }
+        queue.readTracking(when: { true }) { results.values.append("lu \($0)") }
+        queue.resumeTracking(when: { true }) { results.values.append("relancé \($0)") }
+        queue.runExposure(ExposureSetting(shutter: 31, auto: true)) { _ in results.values.append("réglé") }
+        queue.runPrivacy(on: true) { _ in results.values.append("privacy") }
+        #expect(runner.inFlight == .exposureStatus)
+        runner.answer(.exposureStatus)
+        #expect(runner.inFlight == .privacy(true))
+        runner.answer(.privacy(true))
+        #expect(runner.inFlight == .trackingStatus)
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+        #expect(runner.inFlight == .exposure(ExposureSetting(shutter: 31, auto: true)))
+        runner.answer(.exposure(ExposureSetting(shutter: 31, auto: true)))
+        #expect(runner.refused.isEmpty)
+        #expect(results.values == ["exposition", "privacy", "lu mode(PTZCore.TrackingMode.off)", "relancé success", "réglé"])
+    }
+
+    @Test("Ordre de fond du suivi IA : sa condition est relue à son tour ; fausse, il n'est jamais envoyé et son rappel le dit")
+    func trackingBackgroundGate() {
+        let queue = AIOrderQueue(runner: runner)
+        let results = QueueResults()
+        let gate = Gate()
+        queue.runPrivacy(on: true) { _ in gate.open = false }
+        queue.resumeTracking(when: { gate.open }) { results.values.append("relancé \($0)") }
+        queue.readTracking(when: { gate.open }) { results.values.append("lu \($0)") }
+        runner.answer(.privacy(true))
+        #expect(runner.inFlight == nil)
+        #expect(runner.orders.isEmpty)
+        #expect(runner.trackingReads == 0)
+        #expect(results.values == [
+            #"relancé launchFailed("ordre de fond du suivi IA écarté")"#,
+            #"lu failed(PTZCore.AIResult.launchFailed("ordre de fond du suivi IA écarté"))"#,
+        ])
+    }
+
+    @Test("Ordre de fond du suivi IA parti : la vie privée n'est pas « prête », elle prend le repli au lieu d'attendre")
+    func notReadyDuringTrackingBackground() {
+        runner.nativePrivacyAvailable = true
+        let queue = AIOrderQueue(runner: runner)
+        queue.run(on: false) { _ in }
+        runner.answer(.tracking(false))
+        #expect(queue.isReady)
+        queue.readTracking(when: { true }) { _ in }
+        #expect(runner.inFlight == .trackingStatus)
+        #expect(!queue.isReady)
+        #expect(queue.busyWithTracking)
+        #expect(!queue.busyWithExposure)
+        runner.answer(.trackingStatus)
+        #expect(queue.isReady)
+        #expect(!queue.busyWithTracking)
+    }
+
     @Test("Préparation et disponibilité passent à l'utilitaire")
     func forwards() {
         let queue = AIOrderQueue(runner: runner)
@@ -156,4 +214,9 @@ struct AIOrderQueueTests {
 @MainActor
 private final class QueueResults {
     var values: [String] = []
+}
+
+@MainActor
+private final class Gate {
+    var open = true
 }

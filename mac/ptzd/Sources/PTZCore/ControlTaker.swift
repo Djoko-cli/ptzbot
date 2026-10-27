@@ -2,8 +2,8 @@ import Foundation
 import NacelleProtocol
 
 /// Suivi IA de la caméra par `obsbot-ai` (spec § 6.4, amendement A3, spec app Mac § 7.5) : la coupure
-/// avant de piloter (prise en main), et les ordres explicites. Retient le dernier ordre réussi, l'état réel
-/// ne se lisant pas.
+/// avant de piloter (prise en main), et les ordres explicites. Publie le dernier ordre réussi, ou le mode réel lu par
+/// `TrackingReconciler` (spec § 6.4 bis), qui retient aussi le choix voulu et le réapplique.
 @MainActor
 public final class ControlTaker {
     /// Délai avant l'unique nouvel essai après un échec : le SDK peut échouer quand la
@@ -11,10 +11,19 @@ public final class ControlTaker {
     public static let retryDelay: TimeInterval = 3
 
     public private(set) var state: ControlState = .idle
-    /// Dernier ordre réussi ; `unknown` au départ et après `forget()`.
+    /// Dernier ordre réussi, ou dernier mode réel lu ; `unknown` au départ et après `forget()`.
     public private(set) var tracking: AITracking = .unknown
-    /// La caméra peut être en suivi maintenant ou une fois l'ordre en cours terminé.
-    public var mayBeTracking: Bool { tracking != .off || explicitOrder }
+    /// La caméra peut être en suivi maintenant ou une fois l'ordre en cours terminé (une relance de fond comprise).
+    public var mayBeTracking: Bool { tracking != .off || explicitOrder || resumePending }
+    /// Une relance de fond du suivi voulu attend dans la file ou est partie (`TrackingReconciler`) : le suivi peut
+    /// s'allumer, le joystick et la vie privée le recoupent.
+    public var resumePending = false
+    /// Change au début de chaque ordre (coupure, nouvel essai, ordre explicite) et à chaque `reset` : une lecture du mode
+    /// réel donnée avant n'en dit plus rien.
+    public private(set) var epoch = 0
+    /// Fin du dernier ordre de suivi (horloge du planificateur) : la caméra bascule encore environ 0,5 s après (mesuré
+    /// le 28/10), une lecture trop proche rendrait l'état d'avant.
+    public private(set) var lastOrderEnd: TimeInterval?
     /// Appelé quand `state` ou `tracking` change.
     public var onChange: (() -> Void)?
 
@@ -66,9 +75,11 @@ public final class ControlTaker {
         state = .taking
         onChange?()
         explicitOrder = true
+        epoch += 1
         let ticket = generation
         runner.run(on: on) { [weak self] result in
             guard let self else { return }
+            lastOrderEnd = scheduler.now
             guard ticket == generation else {
                 // Utilitaire réinitialisé pendant l'ordre : l'échec est rendu, l'état a déjà été remis.
                 completion(result)
@@ -103,6 +114,7 @@ public final class ControlTaker {
     /// son dernier état connu. L'appelant publie l'état (pas de `onChange` ici : ce n'est pas la fin d'une coupure).
     public func reset() {
         generation += 1
+        epoch += 1
         retryTimer?.cancel()
         retryTimer = nil
         cutPending = false
@@ -120,10 +132,20 @@ public final class ControlTaker {
         onChange?()
     }
 
+    /// Le mode réel lu, ou une relance de fond réussie (`TrackingReconciler`) : il devient l'état publié. Sans effet
+    /// pendant un ordre, dont la réponse dira l'état.
+    public func observe(_ value: AITracking) {
+        guard state != .taking, tracking != value else { return }
+        tracking = value
+        onChange?()
+    }
+
     private func launch() {
         let ticket = generation
+        epoch += 1
         runner.run(on: false) { [weak self] result in
             guard let self, ticket == generation else { return }
+            lastOrderEnd = scheduler.now
             finish(result)
         }
     }

@@ -37,6 +37,8 @@ public final class PTZController {
     private let control: ControlTaker
     /// L'exposition automatique (spec § 6.11).
     private let exposure: ExposureReconciler
+    /// Le suivi IA retenu et relu (spec § 6.4 bis).
+    private let tracking: TrackingReconciler
     private let log: LogSink
     private var lastControl: ControlState = .idle
     /// Retour audio de talkd, lu par `TalkbackWatcher` (spec parler § 5).
@@ -78,6 +80,8 @@ public final class PTZController {
         )
         let exposure = ExposureReconciler(runner: queue, store: store, log: log)
         self.exposure = exposure
+        let tracking = TrackingReconciler(control: control, queue: queue, scheduler: scheduler, store: store, log: log)
+        self.tracking = tracking
         snapshot = StateSnapshot(
             camera: camera.isPresent ? .connected : .absent,
             control: .idle,
@@ -100,6 +104,13 @@ public final class PTZController {
         exposure.onChange = { [weak self] in self?.publish() }
         exposure.onClientError = { [weak self] in self?.onClientError?($0, $1, $2) }
         control.onChange = { [weak self] in self?.controlChanged() }
+        // Le suivi n'est jamais allumé pendant la vie privée, ni sur une caméra qui peut être en mode natif (spec § 6.4 bis).
+        tracking.canOrder = { [weak self] in
+            guard let self else { return false }
+            return camera.isPresent && privacy.allowsTracking
+        }
+        // Il reprend une fois la position d'avant la vie privée rétablie, jamais pendant sa vérification.
+        privacy.onPositionRestored = { [weak self] in self?.positionRestored() }
     }
 
     /// Le retour audio devient prêt ou indisponible : l'état est rediffusé si la valeur change.
@@ -145,6 +156,8 @@ public final class PTZController {
     /// branchement vu juste après est traité comme un démarrage, non comme une coupure d'alimentation (réserve 1).
     public func systemWoke() {
         log("Le Mac sort de veille.")
+        // Une relance ou une lecture du suivi en cours visait la session d'avant la veille.
+        tracking.abandonSession()
         // Utilitaire gardé chaud, vie privée éteinte : sa session du SDK a pu devenir périmée pendant la veille (le bus
         // USB n'est pas renuméroté, aucun branchement n'est vu). Elle repart neuve : une entrée dans les secondes qui
         // suivent prend le repli (−70° tout de suite), jamais un ordre sur une session invalide. En vie privée, la
@@ -155,6 +168,8 @@ public final class PTZController {
             keepAIWarm()
         }
         privacy.systemWoke()
+        // Le bus USB a pu dormir : le suivi voulu est réappliqué, puis relu (sans effet pendant la vie privée).
+        tracking.reapply(reason: "sortie de veille du Mac")
     }
 
     /// ptzd démarre sans voir la caméra : son prochain branchement est une mise sous tension, pas un redémarrage de ptzd
@@ -169,12 +184,14 @@ public final class PTZController {
         log("obsbot-ai mis à jour par PTZBot : utilitaire relancé.")
         privacy.abandonSession()
         exposure.abandonSession()
+        tracking.abandonSession()
         control.reset()
         lastControl = control.state
         keepAIWarm()
         privacy.utilityUpdated()
         // Toujours : l'indicateur « en cours de mise à jour » doit retomber même caméra absente.
         exposure.utilityUpdated(cameraPresent: camera.isPresent)
+        tracking.utilityUpdated(cameraPresent: camera.isPresent)
         publish()
     }
 
@@ -192,9 +209,13 @@ public final class PTZController {
             if let refusal = refusal() {
                 return refusal
             }
-            // Le suivi IA contrerait le joystick : coupé au premier mouvement, s'il n'est pas déjà coupé.
-            if pan != 0 || tilt != 0, control.mayBeTracking {
-                control.take()
+            // Le suivi IA contrerait le joystick : coupé au premier mouvement, s'il n'est pas déjà coupé ; le choix retenu
+            // devient « coupé » (spec § 6.4 bis).
+            if pan != 0 || tilt != 0 {
+                if control.mayBeTracking {
+                    control.take()
+                }
+                tracking.userMoved()
             }
             privacy.userMoved()
             return attempt { try motion.move(pan: pan, tilt: tilt, from: client) }
@@ -224,7 +245,11 @@ public final class PTZController {
                 return refusal
             }
             control.setTracking(on: on) { [weak self] result in
-                guard result != .success else { return }
+                guard result != .success else {
+                    // L'interrupteur des apps : le choix retenu (spec § 6.4 bis).
+                    self?.tracking.userChose(on: on)
+                    return
+                }
                 self?.onClientError?(client, .uvcFailed, AIFailureText.message(motive: result.userDescription))
             }
             return nil
@@ -240,11 +265,13 @@ public final class PTZController {
     }
 
     /// Branchement ou débranchement de la caméra. Au branchement, la vie privée est réappliquée (d'après l'état réel si
-    /// la caméra peut être en mode natif) et le suivi IA recoupé, au cas où la caméra aurait redémarré.
+    /// la caméra peut être en mode natif) et le suivi IA recoupé, au cas où la caméra aurait redémarré ; hors vie privée,
+    /// le suivi IA voulu est relancé, puis relu (spec § 6.4 bis).
     public func cameraPresenceChanged(_ present: Bool) {
         // Un ordre de vie privée native en cours ne vaut plus : sa réponse est écartée, l'état réel sera relu.
         privacy.abandonSession()
         exposure.abandonSession()
+        tracking.abandonSession()
         // Le SDK gardé par l'utilitaire du suivi IA ne connaît plus la caméra : session neuve au prochain ordre.
         control.reset()
         lastControl = control.state
@@ -254,7 +281,7 @@ public final class PTZController {
             if !privacy.isActive {
                 motion.refreshPosition()
                 zoom.refresh()
-                // La caméra a pu redémarrer avec son propre réglage : le dernier ordre ne vaut plus.
+                // La caméra a pu redémarrer avec son propre réglage : le dernier ordre ne vaut plus, jusqu'à la relecture.
                 control.forget()
             }
         } else {
@@ -266,6 +293,8 @@ public final class PTZController {
         if present {
             // La caméra a pu oublier le mode automatique en redémarrant : l'exposition voulue est réappliquée.
             exposure.reapply(reason: "caméra branchée")
+            // De même pour le suivi IA voulu ; la relecture qui suit remplace « inconnu » par l'état réel.
+            tracking.reapply(reason: "caméra branchée")
         }
         publish()
     }
@@ -276,6 +305,12 @@ public final class PTZController {
         exposure.privacyEnded()
     }
 
+    /// La vie privée est finie et la position d'avant rétablie : le suivi IA voulu reprend (spec § 6.4 bis).
+    private func positionRestored() {
+        guard camera.isPresent else { return }
+        tracking.reapply(reason: "sortie de la vie privée")
+    }
+
     /// Fin d'une coupure du suivi IA : sur une caméra qui démarre, obsbot-ai off a pu tourner en même temps que la
     /// première réapplication de la vie privée.
     private func controlChanged() {
@@ -283,6 +318,7 @@ public final class PTZController {
         lastControl = control.state
         if previous == .taking, control.state != .taking, camera.isPresent {
             privacy.controlFinished()
+            tracking.controlFinished()
         }
         publish()
     }

@@ -14,7 +14,7 @@ public struct SavedPosition: Codable, Equatable, Sendable {
     }
 }
 
-/// Contenu de state.json (spec § 6.5, § 6.5 bis et § 6.11).
+/// Contenu de state.json (spec § 6.5, § 6.5 bis, § 6.11 et § 6.4 bis).
 public struct PersistedState: Codable, Equatable, Sendable {
     /// La vie privée est en vigueur : de l'entrée demandée par l'utilisateur jusqu'à la fin de la sortie (position
     /// rétablie). Une coupure de ptzd en cours de sortie la réapplique : c'est le côté sûr.
@@ -29,23 +29,29 @@ public struct PersistedState: Codable, Equatable, Sendable {
     /// Le réglage d'exposition lu juste avant l'activation, remis à la désactivation. Écrit avant de passer en
     /// automatique ; nil hors exposition automatique (et, par un fichier abîmé, quand elle est voulue sans origine).
     public var exposureOrigin: ExposureSetting?
+    /// Le suivi IA est voulu (spec § 6.4 bis) : le dernier ordre des apps réussi, coupé par le joystick, ou l'état réel
+    /// adopté ; réappliqué au branchement, au réveil du Mac, à la sortie de la vie privée et après `aiUpdated`. La vie
+    /// privée ne le change pas.
+    public var aiTracking: Bool
 
     public init(
         privacy: Bool,
         saved: SavedPosition?,
         native: Bool = false,
         autoExposure: Bool = false,
-        exposureOrigin: ExposureSetting? = nil
+        exposureOrigin: ExposureSetting? = nil,
+        aiTracking: Bool = false
     ) {
         self.privacy = privacy
         self.saved = saved
         self.native = native
         self.autoExposure = autoExposure
         self.exposureOrigin = exposureOrigin
+        self.aiTracking = aiTracking
     }
 
     private enum CodingKeys: String, CodingKey {
-        case privacy, saved, native, autoExposure, exposureOrigin
+        case privacy, saved, native, autoExposure, exposureOrigin, aiTracking
         /// Le champ du premier prototype de la vie privée V2 (`native` ou `tilt`), lu seulement.
         case mode
     }
@@ -64,6 +70,8 @@ public struct PersistedState: Codable, Equatable, Sendable {
         // Absents d'un fichier d'avant l'exposition automatique ; illisibles, ils se lisent « désactivée » / sans origine.
         autoExposure = (try? c.decodeIfPresent(Bool.self, forKey: .autoExposure)) ?? false
         exposureOrigin = try? c.decodeIfPresent(ExposureSetting.self, forKey: .exposureOrigin)
+        // Absent d'un fichier d'avant le suivi retenu ; illisible, il se lit « coupé ».
+        aiTracking = (try? c.decodeIfPresent(Bool.self, forKey: .aiTracking)) ?? false
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -76,6 +84,9 @@ public struct PersistedState: Codable, Equatable, Sendable {
             try c.encode(true, forKey: .autoExposure)
         }
         try c.encodeIfPresent(exposureOrigin, forKey: .exposureOrigin)
+        if aiTracking {
+            try c.encode(true, forKey: .aiTracking)
+        }
     }
 }
 

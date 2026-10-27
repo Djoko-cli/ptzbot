@@ -44,6 +44,21 @@ public enum PrivacyReading: Equatable, Sendable {
     case failed(AIResult, pitch: Double? = nil)
 }
 
+/// Mode IA réel de la caméra, lu par `tracking status` (`tiny.ai_mode` du SDK, essai témoin du 28/10) : `on` pour le
+/// suivi d'une personne ou tout autre mode de suivi, `off` pour aucun, `switching` pendant une bascule (environ 0,5 s
+/// après un ordre, mesuré) : rien à conclure, on relit plus tard.
+public enum TrackingMode: String, Equatable, Sendable {
+    case on
+    case off
+    case switching
+}
+
+/// Issue d'une lecture du mode IA : le mode lu, ou l'échec de l'ordre.
+public enum TrackingReading: Equatable, Sendable {
+    case mode(TrackingMode)
+    case failed(AIResult)
+}
+
 /// Réglage d'exposition de la caméra : l'obturation et le mode (spec § 6.11). Pour la Tiny 2, c'est tout ce que le SDK lit
 /// et écrit (`cameraGetExposureAbsolute`, `cameraSetExposureAbsolute`) ; le gain reste celui d'OBSBOT Center.
 public struct ExposureSetting: Codable, Equatable, Sendable {
@@ -63,10 +78,11 @@ public enum ExposureReading: Equatable, Sendable {
     case failed(AIResult)
 }
 
-/// Un ordre de l'utilitaire : le suivi IA, la vie privée native de la caméra, la lecture de son état réel
+/// Un ordre de l'utilitaire : le suivi IA et la lecture de son mode réel, la vie privée native de la caméra, la lecture de son état réel
 /// (spec § 6.5 bis), ou l'exposition (spec § 6.11).
 enum AIOrder: Equatable, Sendable {
     case tracking(on: Bool)
+    case trackingStatus
     case privacy(on: Bool)
     case privacyStatus
     case exposureStatus
@@ -76,6 +92,7 @@ enum AIOrder: Equatable, Sendable {
     var line: String {
         switch self {
         case let .tracking(on): on ? "on" : "off"
+        case .trackingStatus: "tracking status"
         case let .privacy(on): on ? "privacy on" : "privacy off"
         case .privacyStatus: "privacy status"
         case .exposureStatus: "exposure status"
@@ -90,6 +107,8 @@ enum AIOrder: Equatable, Sendable {
 @MainActor
 public protocol AIRunner: AnyObject {
     func run(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void)
+    /// Lit le mode IA réel de la caméra (`tracking status`). Un utilitaire d'avant cet ordre rend `unknownOrder`.
+    func readTracking(completion: @escaping @MainActor @Sendable (TrackingReading) -> Void)
     /// Vie privée native de l'OBSBOT : image et micro coupés (spec § 6.5 bis). Même contrat que `run`.
     func runPrivacy(on: Bool, completion: @escaping @MainActor @Sendable (AIResult) -> Void)
     /// Lit l'état réel de la caméra (`privacy status`, spec § 6.5 bis).
@@ -106,6 +125,9 @@ public protocol AIRunner: AnyObject {
     /// Un ordre d'exposition est en cours (file des ordres, spec § 6.11) : la vie privée passerait derrière lui, `isReady`
     /// est faux et l'entrée prend le repli.
     var busyWithExposure: Bool { get }
+    /// Un ordre de fond du suivi IA est en cours (relecture ou relance, `TrackingReconciler`) : comme pour l'exposition,
+    /// `isReady` est faux et l'entrée en vie privée prend le repli au lieu d'attendre derrière lui.
+    var busyWithTracking: Bool { get }
     /// L'utilitaire reste chargé tant que ptzd tourne (ptzd lancé avec le SDK, spec § 6.9) : il n'est plus arrêté pour
     /// inactivité, et ptzd le prépare dès le démarrage, au branchement de la caméra et après une mise à jour.
     var keepsWarm: Bool { get }
@@ -128,11 +150,15 @@ extension AIRunner {
     public func readExposure(completion: @escaping @MainActor @Sendable (ExposureReading) -> Void) {
         completion(.failed(.launchFailed("exposition indisponible")))
     }
+    public func readTracking(completion: @escaping @MainActor @Sendable (TrackingReading) -> Void) {
+        completion(.failed(.launchFailed("mode IA illisible")))
+    }
     public func runExposure(_ setting: ExposureSetting, completion: @escaping @MainActor @Sendable (AIResult) -> Void) {
         completion(.launchFailed("exposition indisponible"))
     }
     public var supportsNativePrivacy: Bool { false }
     public var isReady: Bool { false }
     public var busyWithExposure: Bool { false }
+    public var busyWithTracking: Bool { false }
     public var keepsWarm: Bool { false }
 }

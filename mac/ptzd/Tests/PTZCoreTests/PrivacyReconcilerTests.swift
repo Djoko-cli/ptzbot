@@ -1615,6 +1615,8 @@ struct PrivacyReconcilerTests {
     /// ptzd lancé avec le SDK : l'utilitaire reste chargé tant que ptzd tourne (spec § 6.9).
     private func makeWarmController() -> PTZController {
         runner.keepsWarm = true
+        // L'utilitaire chaud relit aussi le mode IA (spec § 6.4 bis) : ces lectures répondent seules.
+        runner.autoTrackingReads = true
         camera.position = Self.before
         return makeController()
     }
@@ -1626,10 +1628,11 @@ struct PrivacyReconcilerTests {
         controller.cameraPresenceChanged(true)
         #expect(runner.prewarms == 1)
         #expect(!runner.isReady)
-        #expect(runner.received.isEmpty)
+        // Aucun pilotage : seulement la relecture du mode IA (spec § 6.4 bis), qui attend que le SDK soit prêt.
+        #expect(runner.received.allSatisfy { $0 == .trackingStatus })
         scheduler.advance(by: FakeAIRunner.loadTime + 0.1)
         #expect(runner.isReady)
-        #expect(runner.received.isEmpty)
+        #expect(runner.received.allSatisfy { $0 == .trackingStatus })
         #expect(runner.sessions == 1)
         // Des heures sans client : toujours prêt.
         scheduler.advance(by: 6 * 3600)
@@ -1640,12 +1643,14 @@ struct PrivacyReconcilerTests {
     @Test("Toujours chaud : la première entrée, utilitaire jamais piloté, prend le chemin rapide (aucun ordre UVC), derrière la coupure du suivi")
     func firstEntryIsFast() {
         let controller = makeWarmController()
+        // La caméra suit quelqu'un (lu par la relecture du mode IA) : la vie privée coupe d'abord le suivi.
+        runner.aiMode = .on
         controller.cameraPresenceChanged(true)
         scheduler.advance(by: 60)
         #expect(runner.isReady)
         runner.autoReads = true
         #expect(controller.handle(.privacy(on: true), from: 1) == nil)
-        // Suivi IA inconnu : coupé d'abord (file), puis privacy on directement, sans −70°.
+        // Suivi IA lu allumé : coupé d'abord (file), puis privacy on directement, sans −70°.
         #expect(camera.absoluteCommands.isEmpty)
         #expect(runner.inFlight == .tracking(false))
         runner.answer(.tracking(false))
@@ -1728,11 +1733,14 @@ struct PrivacyReconcilerTests {
     @Test("Toujours chaud, I1 : une entrée 5 s après la sortie de veille du Mac prend le chemin rapide, sur la session neuve")
     func fastEntryAfterMacWake() {
         let controller = makeWarmController()
+        runner.aiMode = .on
         controller.cameraPresenceChanged(true)
         scheduler.advance(by: 6 * 3600)
         controller.systemWoke()
         scheduler.advance(by: FakeAIRunner.loadTime + 1)
         #expect(runner.isReady)
+        // Le suivi lu allumé, donc retenu, est relancé au réveil (spec § 6.4 bis) ; sa réponse arrive avec le SDK prêt.
+        runner.answer(.tracking(true))
         runner.autoReads = true
         #expect(controller.handle(.privacy(on: true), from: 1) == nil)
         runner.answer(.tracking(false))
