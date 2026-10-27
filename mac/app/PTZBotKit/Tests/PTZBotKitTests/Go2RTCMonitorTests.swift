@@ -41,6 +41,52 @@ final class FakeProcessListing: ProcessListing, @unchecked Sendable {
     }
 }
 
+/// La sonde de coreaudiod simulée : répond, ou non (expirée, en échec) ; peut rester bloquée jusqu'à `release()`.
+final class FakeCoreAudioProbe: CoreAudioProbe, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _responds = true
+    private var _calls = 0
+    private var _running = 0
+    private var _maxRunning = 0
+    private var gate: DispatchSemaphore?
+
+    var responds: Bool {
+        get { lock.withLock { _responds } }
+        set { lock.withLock { _responds = newValue } }
+    }
+
+    var calls: Int { lock.withLock { _calls } }
+    /// Sondes en cours au même moment, au plus (jamais deux).
+    var maxRunning: Int { lock.withLock { _maxRunning } }
+
+    /// Les sondes suivantes restent bloquées jusqu'à `release()`.
+    func block() {
+        lock.withLock { gate = DispatchSemaphore(value: 0) }
+    }
+
+    func release() {
+        let gate = lock.withLock { () -> DispatchSemaphore? in
+            defer { self.gate = nil }
+            return self.gate
+        }
+        gate?.signal()
+    }
+
+    func coreAudioResponds() -> Bool {
+        let gate = lock.withLock { () -> DispatchSemaphore? in
+            _calls += 1
+            _running += 1
+            _maxRunning = max(_maxRunning, _running)
+            return self.gate
+        }
+        gate?.wait()
+        return lock.withLock {
+            _running -= 1
+            return _responds
+        }
+    }
+}
+
 /// Des réponses de `GET /api/streams` de la forme de go2rtc 1.9.14 (relevée le 12/10 sur un go2rtc en service, valeurs
 /// remplacées par des fictives).
 enum StreamsFixtures {
@@ -104,15 +150,63 @@ struct Go2RTCSignalsTests {
         let healthy = Self.ps.split(separator: "\n").filter { !$0.hasPrefix("505 ") }.joined(separator: "\n")
         #expect(CoreAudioDetector.videoFFmpegCount(psOutput: healthy, root: 500) == 1)
         #expect(CoreAudioDetector.videoFFmpegCount(psOutput: Self.ps, root: 999) == 0)
-        #expect(CoreAudioDetector.isStuck(videoFFmpegs: 2, lastTimeout: nil, now: 0))
-        #expect(!CoreAudioDetector.isStuck(videoFFmpegs: 1, lastTimeout: nil, now: 0))
     }
 
-    @Test("coreaudiod : un exec: timeout de moins de 2 min suffit ; plus vieux, non")
-    func timeoutWindow() {
-        #expect(CoreAudioDetector.isStuck(videoFFmpegs: 1, lastTimeout: 100, now: 219))
-        #expect(!CoreAudioDetector.isStuck(videoFFmpegs: 1, lastTimeout: 100, now: 220))
+    @Test("coreaudiod : un ffmpeg vidéo en trop vu une seule fois n'alerte pas (redémarrage d'ffmpeg) ; deux contrôles de suite, si")
+    func extraVideoTwiceInARow() {
+        var watch = CoreAudioWatch()
+        watch.videoCount(2)
+        #expect(!watch.isStuck(now: 0))
+        watch.videoCount(2)
+        #expect(watch.isStuck(now: 0))
+        watch.videoCount(1)
+        #expect(!watch.isStuck(now: 0))
+        watch.videoCount(2)
+        #expect(!watch.isStuck(now: 0))
         #expect(CoreAudioDetector.repairCommand == "sudo killall -9 coreaudiod")
+    }
+
+    @Test("coreaudiod : un exec: timeout seul n'alerte pas ; il ouvre une suspicion, et la sonde qui répond la lève")
+    func timeoutThenProbeResponds() {
+        var watch = CoreAudioWatch()
+        watch.sawTimeout(at: 100)
+        #expect(!watch.isStuck(now: 100))
+        #expect(watch.shouldProbe(now: 100))
+        watch.probeStarted(now: 100)
+        // Jamais deux sondes en même temps.
+        #expect(!watch.shouldProbe(now: 101))
+        watch.probeFinished(responds: true)
+        #expect(!watch.isStuck(now: 101))
+        // Suspicion levée : plus de sonde sans nouveau timeout.
+        #expect(!watch.shouldProbe(now: 200))
+    }
+
+    @Test("coreaudiod : exec: timeout et sonde expirée ou en échec : alerte, tant que la suspicion dure (2 min sans nouveau timeout)")
+    func timeoutThenProbeFails() {
+        var watch = CoreAudioWatch()
+        watch.sawTimeout(at: 100)
+        watch.probeStarted(now: 100)
+        watch.probeFinished(responds: false)
+        #expect(watch.isStuck(now: 105))
+        #expect(watch.isStuck(now: 100 + CoreAudioDetector.timeoutWindow - 1))
+        #expect(!watch.isStuck(now: 100 + CoreAudioDetector.timeoutWindow))
+        #expect(!watch.shouldProbe(now: 100 + CoreAudioDetector.timeoutWindow))
+    }
+
+    @Test("coreaudiod : au plus une sonde toutes les 30 s ; une sonde qui répond ne lève pas un timeout vu pendant qu'elle tournait")
+    func probeCadence() {
+        var watch = CoreAudioWatch()
+        watch.sawTimeout(at: 0)
+        watch.probeStarted(now: 0)
+        watch.sawTimeout(at: 1)
+        watch.probeFinished(responds: true)
+        #expect(!watch.isStuck(now: 2))
+        #expect(!watch.shouldProbe(now: 10))
+        #expect(!watch.shouldProbe(now: CoreAudioDetector.probeInterval - 1))
+        #expect(watch.shouldProbe(now: CoreAudioDetector.probeInterval))
+        // Un nouveau go2rtc efface tout.
+        watch.reset()
+        #expect(!watch.shouldProbe(now: 100))
     }
 
     @Test("Journal : exec: timeout et refus d'accès d'avfoundation reconnus ; le reste ignoré")
@@ -156,6 +250,7 @@ struct Go2RTCMonitorTests {
     let scheduler = FakeScheduler()
     let api = FakeGo2RTCAPI()
     let processes = FakeProcessListing()
+    let probe = FakeCoreAudioProbe()
 
     /// Un go2rtc qui tourne (gardien simulé de pid 1000), son journal dans `directory`.
     private func running(_ directory: URL) async -> (Go2RTCSupervisor, Go2RTCMonitor, URL) {
@@ -168,8 +263,19 @@ struct Go2RTCMonitorTests {
         )
         supervisor.start()
         await supervisor.waitForPreparation()
-        let monitor = Go2RTCMonitor(supervisor: supervisor, api: api, processes: processes, logURL: log, scheduler: scheduler)
+        let monitor = Go2RTCMonitor(supervisor: supervisor, api: api, processes: processes, probe: probe, logURL: log, scheduler: scheduler)
         return (supervisor, monitor, log)
+    }
+
+    /// Attend qu'une condition devienne vraie (une sonde tourne sur un autre fil), 2 s au plus.
+    private func eventuallyTrue(_ condition: () -> Bool) async -> Bool {
+        for _ in 0..<200 {
+            if condition() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return condition()
     }
 
     private func append(_ text: String, to url: URL) throws {
@@ -195,7 +301,7 @@ struct Go2RTCMonitorTests {
         #expect(monitor.health == Go2RTCHealth())
     }
 
-    @Test("Deux ffmpeg vidéo : coreaudiod bloqué ; caméra sans producteur : absente")
+    @Test("Deux ffmpeg vidéo à deux contrôles de suite : coreaudiod bloqué ; à un seul, non ; caméra sans producteur : absente")
     func alerts() async throws {
         let directory = try Go2RTCFixtures.directory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -203,7 +309,11 @@ struct Go2RTCMonitorTests {
         api.body = StreamsFixtures.noProducer
         processes.output = "1000 1 g\n1001 1000 go2rtc\n1002 1001 ffmpeg -f avfoundation -an\n1003 1001 ffmpeg -f avfoundation -an\n"
         await monitor.refresh()
+        // Un chevauchement passager pendant un redémarrage d'ffmpeg (au réveil) : pas encore d'alerte.
+        #expect(monitor.health == Go2RTCHealth(cameraMissing: true))
+        await monitor.refresh()
         #expect(monitor.health == Go2RTCHealth(coreAudioStuck: true, cameraMissing: true))
+        #expect(probe.calls == 0)
     }
 
     @Test("Journal : un refus d'accès écrit après le lancement est vu ; avant, non ; un nouveau go2rtc l'efface")
@@ -224,17 +334,65 @@ struct Go2RTCMonitorTests {
         #expect(!monitor.health.accessDenied)
     }
 
-    @Test("exec: timeout : alerte coreaudiod 2 min, puis plus rien ; relu toutes les 10 s sans panneau")
+    @Test("exec: timeout, sonde expirée : alerte coreaudiod, puis plus rien 2 min après ; relu toutes les 10 s sans panneau")
     func timeout() async throws {
         let directory = try Go2RTCFixtures.directory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let (_, monitor, log) = await running(directory)
+        probe.responds = false
         monitor.start()
         try append("ERR [exec] timeout source=exec:…\n", to: log)
         scheduler.advance(by: Go2RTCMonitor.logScanInterval)
+        await monitor.waitForProbe()
+        #expect(probe.calls == 1)
         #expect(monitor.health.coreAudioStuck)
         scheduler.advance(by: CoreAudioDetector.timeoutWindow)
         #expect(!monitor.health.coreAudioStuck)
+    }
+
+    @Test("exec: timeout après la veille (caméra sortie du bus USB), coreaudiod qui répond : pas d'alerte")
+    func timeoutWithHealthyCoreAudio() async throws {
+        let directory = try Go2RTCFixtures.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, monitor, log) = await running(directory)
+        monitor.start()
+        try append("12:00:16.000 ERR [exec] timeout source=exec:ffmpeg -f avfoundation -i :Micro\n", to: log)
+        scheduler.advance(by: Go2RTCMonitor.logScanInterval)
+        #expect(!monitor.health.coreAudioStuck)
+        await monitor.waitForProbe()
+        #expect(probe.calls == 1)
+        #expect(!monitor.health.coreAudioStuck)
+        scheduler.advance(by: Go2RTCMonitor.logScanInterval * 3)
+        await monitor.waitForProbe()
+        #expect(!monitor.health.coreAudioStuck)
+        #expect(probe.calls == 1)
+    }
+
+    @Test("Cadence des sondes : des timeouts toutes les 10 s, au plus une sonde toutes les 30 s, jamais deux en même temps")
+    func probeCadence() async throws {
+        let directory = try Go2RTCFixtures.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, monitor, log) = await running(directory)
+        probe.responds = false
+        probe.block()
+        monitor.start()
+        for _ in 0..<6 {
+            try append("ERR [exec] timeout source=exec:…\n", to: log)
+            scheduler.advance(by: Go2RTCMonitor.logScanInterval)
+        }
+        // La première sonde est restée bloquée tout ce temps : aucune autre n'est partie.
+        #expect(await eventuallyTrue { probe.calls == 1 })
+        probe.release()
+        await monitor.waitForProbe()
+        #expect(monitor.health.coreAudioStuck)
+        for _ in 0..<6 {
+            try append("ERR [exec] timeout source=exec:…\n", to: log)
+            scheduler.advance(by: Go2RTCMonitor.logScanInterval)
+            await monitor.waitForProbe()
+        }
+        // 60 s de plus : deux sondes (toutes les 30 s), jamais deux ensemble.
+        #expect(probe.calls == 3)
+        #expect(probe.maxRunning == 1)
     }
 
     @Test("Panneau fermé : plus de lecture de l'API ; go2rtc arrêté : ni clients ni alerte")

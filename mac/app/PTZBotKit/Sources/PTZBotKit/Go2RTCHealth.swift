@@ -1,9 +1,19 @@
 import Foundation
 
-/// Le blocage de coreaudiod (spec B3 § 5) : plus d'un ffmpeg vidéo sous go2rtc, ou un `exec: timeout` dans le journal
-/// depuis moins de 2 min. PTZBot ne le répare jamais lui-même (il faudrait les droits root) : il donne la commande.
+/// Le blocage de coreaudiod (spec B3 § 5) : plus d'un ffmpeg vidéo sous go2rtc à deux contrôles de suite, ou un
+/// `exec: timeout` dans le journal depuis moins de 2 min **confirmé par une sonde** de coreaudiod qui ne répond pas. Un
+/// timeout seul ne suffit plus : la caméra qui quitte le bus USB pendant une veille du Mac en donne un aussi (24/10).
+/// PTZBot ne le répare jamais lui-même (il faudrait les droits root) : il donne la commande.
 public enum CoreAudioDetector {
+    /// Durée de la suspicion ouverte par un `exec: timeout`.
     public static let timeoutWindow: TimeInterval = 120
+    /// Au plus une sonde de coreaudiod pendant ce délai.
+    public static let probeInterval: TimeInterval = 30
+    /// La sonde est un processus enfant limité à ce délai : au-delà, coreaudiod est tenu pour figé.
+    public static let probeTimeout: TimeInterval = 5
+    /// Contrôles de suite où plus d'un ffmpeg vidéo doit être vu : un seul peut être le chevauchement passager d'un
+    /// redémarrage d'ffmpeg (au réveil du Mac).
+    public static let extraVideoChecks = 2
     public static let repairCommand = "sudo killall -9 coreaudiod"
 
     /// Une ligne de `ps -A -ww -o pid=,ppid=,command=`.
@@ -42,12 +52,71 @@ public enum CoreAudioDetector {
         }.count
     }
 
-    public static func isStuck(videoFFmpegs: Int, lastTimeout: TimeInterval?, now: TimeInterval) -> Bool {
-        if videoFFmpegs > 1 {
+}
+
+/// L'état du détecteur de coreaudiod (spec B3 § 5), sans horloge ni processus : la surveillance lui donne ce qu'elle voit
+/// (timeouts du journal, ffmpeg vidéo comptés, résultats de la sonde) et lui demande s'il faut alerter ou sonder.
+public struct CoreAudioWatch: Equatable, Sendable {
+    /// Le dernier `exec: timeout` vu (horloge de la surveillance) : la suspicion dure `timeoutWindow` après lui.
+    private var lastTimeout: TimeInterval?
+    /// La dernière sonde de cette suspicion n'a pas répondu (expirée ou en échec).
+    private var probeFailed = false
+    /// Début de la sonde en cours (nil : aucune), et de la dernière.
+    private var probeStart: TimeInterval?
+    private var lastProbe: TimeInterval?
+    /// Contrôles de suite où plus d'un ffmpeg vidéo a été vu.
+    private var extraVideoStreak = 0
+
+    public init() {}
+
+    /// Un `exec: timeout` vient d'être lu dans le journal : la suspicion s'ouvre (ou se prolonge).
+    public mutating func sawTimeout(at now: TimeInterval) {
+        lastTimeout = now
+    }
+
+    /// Le nombre de ffmpeg vidéo sous go2rtc, à un contrôle.
+    public mutating func videoCount(_ count: Int) {
+        extraVideoStreak = count > 1 ? extraVideoStreak + 1 : 0
+    }
+
+    private func suspicious(now: TimeInterval) -> Bool {
+        lastTimeout.map { now - $0 < CoreAudioDetector.timeoutWindow } ?? false
+    }
+
+    /// Une sonde est à lancer : suspicion ouverte, aucune sonde en cours, la dernière a au moins `probeInterval`.
+    public func shouldProbe(now: TimeInterval) -> Bool {
+        guard suspicious(now: now), probeStart == nil else { return false }
+        return lastProbe.map { now - $0 >= CoreAudioDetector.probeInterval } ?? true
+    }
+
+    public mutating func probeStarted(now: TimeInterval) {
+        probeStart = now
+        lastProbe = now
+    }
+
+    /// Résultat de la sonde : elle répond, la suspicion est levée (sauf un timeout lu pendant qu'elle tournait) ; elle ne
+    /// répond pas, l'alerte tient tant que dure la suspicion.
+    public mutating func probeFinished(responds: Bool) {
+        let started = probeStart ?? -.infinity
+        probeStart = nil
+        probeFailed = !responds
+        if responds, let last = lastTimeout, last <= started {
+            lastTimeout = nil
+        }
+    }
+
+    /// Un nouveau go2rtc : les alertes du précédent sont effacées.
+    public mutating func reset() {
+        lastTimeout = nil
+        probeFailed = false
+        extraVideoStreak = 0
+    }
+
+    public func isStuck(now: TimeInterval) -> Bool {
+        if extraVideoStreak >= CoreAudioDetector.extraVideoChecks {
             return true
         }
-        guard let lastTimeout else { return false }
-        return now - lastTimeout < timeoutWindow
+        return probeFailed && suspicious(now: now)
     }
 }
 
@@ -130,6 +199,27 @@ public struct SystemProcessListing: ProcessListing {
                                             timeout: 5, captureOutput: true),
               result.exited, result.status == 0 else { return nil }
         return result.output
+    }
+}
+
+/// La sonde de coreaudiod, derrière un protocole pour les tests. Bloquante (jusqu'à `probeTimeout`) : hors du fil de
+/// l'interface.
+public protocol CoreAudioProbe: Sendable {
+    /// coreaudiod répond : la sonde a fini à temps, sans erreur.
+    func coreAudioResponds() -> Bool
+}
+
+/// `system_profiler SPAudioDataType` dans un processus enfant limité à 5 s. Il énumère les appareils audio d'entrée et de
+/// sortie par le HAL, donc par coreaudiod : le chemin même qui se fige (HALS_System) quand ffmpeg n'arrive plus à ouvrir
+/// le micro. Environ 0,4 s quand tout va bien (mesuré le 28/10). Jamais d'appel CoreAudio dans PTZBot lui-même : figé,
+/// il bloquerait un fil pour toujours ; un enfant figé, lui, est tué avec son groupe.
+public struct SystemCoreAudioProbe: CoreAudioProbe {
+    public init() {}
+
+    public func coreAudioResponds() -> Bool {
+        guard let result = ChildProcess.run(URL(fileURLWithPath: "/usr/sbin/system_profiler"), arguments: ["SPAudioDataType"],
+                                            timeout: CoreAudioDetector.probeTimeout) else { return false }
+        return result.exited && result.status == 0
     }
 }
 
