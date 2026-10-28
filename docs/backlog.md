@@ -118,6 +118,8 @@ La spec haut-parleur (§ 5.6) prévoyait une source `exec` avec `#backchannel=1`
 
 Conseil de la session go2rtc : une option de la génération plutôt que le fichier personnalisé, soit une entrée de plus dans le flux `obsbot` : `exec:<ffmpeg> -f <format reçu> -i - -f s16le -ar 16000 -ac 1 udp://127.0.0.1:1986?pkt_size=640#backchannel=1#audio=<codec>`. Le format et le codec exacts sont à lire dans `pkg/pcm` de go2rtc 1.9.14 (`NewBackchannel`). Ce ffmpeg ne lit qu'un tuyau : il ne crée aucun client CoreAudio.
 
+Second usage (28/10/2026) : faire passer la Webcam de Homebridge à Scrypted, pour retirer Camera-ffmpeg de Homebridge. Le haut-parleur de la Webcam dans Maison demande alors ce même backchannel vers talkd, donc la même option de la génération. Décision de Djoko du 28/10 : la Webcam reste dans Homebridge tant que l'option n'existe pas. Le plugin Scrypted « Intercom », déjà construit par la session go2rtc NAS pour d'autres caméras, devrait resservir tel quel pour relayer la voix de Maison vers ce backchannel.
+
 ## Vie privée V2 : OBSBOT Center et session du SDK toujours ouverte (19/10/2026)
 
 Depuis la 1.1.1, ptzd garde l'utilitaire obsbot-ai chargé tant qu'il tourne avec le SDK, pour que l'entrée en vie privée prenne toujours le chemin rapide (décision de Djoko). Aucun mécanisme ne libère la session du SDK quand une autre app, OBSBOT Center par exemple, veut la caméra : il n'existe qu'un avertissement dans le journal. À vérifier au banc : OBSBOT Center reste-t-il utilisable PTZBot ouvert ? Sinon, prévoir une libération de la session (sur demande dans le panneau, ou à la détection d'OBSBOT Center), avec une vie privée qui reste protégée par l'inclinaison pendant ce temps.
