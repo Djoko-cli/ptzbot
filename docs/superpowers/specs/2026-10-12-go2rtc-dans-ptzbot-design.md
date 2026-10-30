@@ -56,7 +56,23 @@ faire : après un plantage de PTZBot, il resterait orphelin, la caméra ouverte.
   processus enfant, transmet SIGTERM et SIGINT, et rend son code de sortie.
 - **Si le parent disparaît**, il envoie SIGTERM au programme, attend `--arret` secondes, puis SIGKILL.
 - **Surveillance** par `kqueue` (`EVFILT_PROC`, `NOTE_EXIT`) sur le pid du parent. Pas de sondage.
-- PTZBot lance donc `gardien --parent <pid de PTZBot> --arret 10 -- go2rtc -config <yaml>`.
+- PTZBot lance donc `gardien --parent <pid de PTZBot> --arret 10 --rtsp <port> [--capture <md5>]… -- go2rtc -config <yaml>`.
+- **Ménage des ffmpeg décrochés (30/10).** Après une veille qui coupe la caméra, go2rtc 1.9.14 relance ses ffmpeg et
+  laisse les anciens en vie, figés sur l'appareil disparu ; un ffmpeg figé dans une capture AVFoundation ignore les
+  3 premiers SIGTERM et ne sort qu'au-delà. Avec `--rtsp <port>` (le port RTSP réglé), le gardien passe toutes les 60 s
+  (`EVFILT_TIMER` de sa boucle kqueue, sans fil) sur les ffmpeg de capture (nom `ffmpeg`, `avfoundation` dans les
+  arguments, même utilisateur) dont la sortie est `rtsp://127.0.0.1:<port>/…` : membres du groupe de go2rtc ou enfants
+  directs, et orphelins (PPID 1) dont la sortie est exactement `rtsp://127.0.0.1:<port>/<md5>` avec un `<md5>` donné par
+  `--capture`. Un ffmpeg de plus de 180 s sans socket TCP `ESTABLISHED` vers ce port (lue par libproc ; une socket
+  illisible : rien n'est conclu), vu ainsi à deux passages de suite, reçoit 4 SIGTERM à 1 s d'intervalle, portés par une
+  minuterie kqueue, chacun revérifié (même pid et même heure de démarrage, toujours décroché). Jamais de SIGKILL, jamais
+  un ffmpeg connecté. Une ligne au journal par ffmpeg visé et par fin constatée. Le gardien relève aussi les enfants de
+  go2rtc à chaque passage.
+- **Empreintes (`--capture`).** go2rtc nomme la sortie d'une source `exec:` par le MD5 (hexadécimal minuscule) de la
+  source coupée au premier `#` (`internal/exec`, `execHandle`) ; PTZBot les calcule à partir des deux sources du yaml
+  qu'il génère. Fichier personnalisé : `--rtsp` seul, pas de ménage des orphelins (la parenté de go2rtc suffit pour ses
+  enfants, et le gardien ne juge que ceux dont la sortie vise ce port).
+- **À l'arrêt de go2rtc**, ses ffmpeg restants reçoivent aussi 4 SIGTERM, à t = 0, 1, 2 et 3 s, dans l'attente de 5 s.
 
 L'alternative, rejetée : à son lancement, PTZBot tue un go2rtc orphelin de la session précédente, connu par un fichier
 de pid. Elle laisse la caméra ouverte entre le plantage et la relance de l'app.
@@ -154,7 +170,8 @@ d'horloge pour les tests.
 | Caméra OBSBOT absente | § 3.6 ; puis l'API (`/api/streams`) : le stream n'a pas de producteur actif | « Caméra OBSBOT absente » |
 | Accès refusé | journal de go2rtc (erreur d'autorisation d'avfoundation) | « Accès à la caméra refusé », avec un bouton qui ouvre Réglages › Confidentialité |
 | Arrêts répétés | § 3.3 | « go2rtc s'arrête sans cesse : ouvrez le journal » |
-| coreaudiod bloqué | plus d'un ffmpeg vidéo enfant à deux contrôles de suite, ou `exec: timeout` dans le journal depuis moins de 2 min **confirmé par deux sondes de suite** de coreaudiod qui ne répondent pas (28/10) | ligne **orange** « coreaudiod ne répond pas : la caméra est bloquée », avec un bouton « Copier la commande de réparation » (`sudo killall -9 coreaudiod`) |
+| coreaudiod bloqué | plus d'un ffmpeg vidéo enfant à deux contrôles de suite, ou `exec: timeout` dans le journal depuis moins de 2 min, **confirmé par deux sondes de suite** de coreaudiod qui ne répondent pas (28/10, 30/10) | ligne **orange** « coreaudiod ne répond pas : la caméra est bloquée », avec un bouton « Copier la commande de réparation » (`sudo killall -9 coreaudiod`) |
+| Captures ffmpeg bloquées | plus d'un ffmpeg vidéo enfant à deux contrôles de suite, coreaudiod qui répond à la sonde (ou pas encore sondé) (30/10) | ligne **orange** « Des captures ffmpeg sont bloquées : nettoyage en cours », sans commande : le gardien les nettoie (§ 3.2) |
 
 - **État normal** : la pastille verte, et « · N clients » au survol, avec le détail par protocole (par exemple
   « RTSP ×1, WebRTC ×1 »).
@@ -162,6 +179,7 @@ d'horloge pour les tests.
   est ouvert**. Il compte les consommateurs du stream `obsbot` par type.
 - **coreaudiod** : PTZBot ne le répare jamais lui-même, puisqu'il faudrait les droits root.
 - **Détecteur (28/10)** : un `exec: timeout` seul n'alerte plus (la caméra qui quitte le bus USB pendant une veille du Mac en donne un aussi, constaté le 24/10) ; il ouvre une suspicion de 2 min, pendant laquelle PTZBot lance `system_profiler SPAudioDataType` (énumération des appareils audio par coreaudiod) dans un processus enfant limité à 5 s, hors du fil de l'interface, au plus toutes les 30 s et jamais deux à la fois : réponse à temps, la suspicion est levée ; expirée ou en échec, elle ne suffit pas (une sonde lente juste après un réveil, pendant que les appareils se réénumèrent, n'est pas un blocage) : l'alerte demande deux sondes ratées de suite, à 30 s d'écart, pendant la même suspicion (une suspicion neuve repart de zéro). Une sonde sans résultat au bout de 10 s (enfant impossible à tuer) compte pour ratée, et la suivante peut partir. Plus d'un ffmpeg vidéo doit être vu à deux contrôles de suite, espacés de 4 s au plus (un chevauchement passager pendant un redémarrage d'ffmpeg, au réveil, n'alerte pas ; la fermeture du panneau remet le compte à zéro).
+- **Deux états (30/10).** Ce signal fort ne suffit plus à accuser coreaudiod : après une veille qui a coupé la caméra, les ffmpeg figés de go2rtc le donnent aussi, coreaudiod répondant en moins d'une seconde. Il ouvre une suspicion et lance la sonde, aux mêmes règles. Sonde qui répond, ou pas encore de verdict : « Des captures ffmpeg sont bloquées : nettoyage en cours », jamais la commande `killall` sur le seul signal fort ; deux sondes ratées de suite : l'alerte coreaudiod, avec sa commande.
 
 ## 6. Interface
 
@@ -281,12 +299,14 @@ Aucun label personnel n'entre dans le code public : la migration est un geste de
 Le [plan](../plans/2026-10-12-go2rtc-dans-ptzbot.md) précise la spec sur ces points, sans en changer les choix.
 
 - **Délais d'arrêt (§ 3.3).** Le gardien reçoit `--arret 10` : il laisse 10 s à go2rtc entre SIGTERM et SIGKILL. Le
-  superviseur n'envoie SIGKILL au gardien lui-même qu'à 15 s, et « Quitter » attend 16 s au plus (6 s sans go2rtc).
+  superviseur n'envoie SIGKILL au gardien lui-même qu'à 16 s (30/10 : le pire cas du gardien, 10 s pour go2rtc puis
+  5 s pour ses ffmpeg, atteignait les 15 s d'avant), et « Quitter » attend 17 s au plus (6 s sans go2rtc).
   Le gardien rend la fin de go2rtc : son code de sortie, ou le même signal.
 - **Ffmpeg à la sortie de go2rtc (§ 3.2, § 3.3).** Rien ne garantit que go2rtc arrête ses ffmpeg en sortant : le gardien lance
   go2rtc dans son propre groupe de processus ; une fois go2rtc sorti, le groupe et les enfants que go2rtc avait juste avant
   son premier signal d'arrêt (relevés par libproc, reconnus par leur heure de démarrage) reçoivent SIGTERM, jamais SIGKILL,
-  et le gardien les attend 5 s au plus avant de rendre le code de go2rtc.
+  et le gardien les attend 5 s au plus avant de rendre le code de go2rtc. Depuis le 30/10 : 4 SIGTERM à 1 s
+  d'intervalle, et les enfants relevés aussi à chaque passage du ménage (§ 3.2).
 - **Noms des appareils (§ 3.6).** go2rtc découpe la commande d'ffmpeg sans échappement (`shell.QuoteSplit`) et coupe
   la source au premier `#`. Un nom est donc écrit entre guillemets doubles, ou simples s'il contient un guillemet
   double ; un nom avec les deux sortes de guillemets, un `#` ou un caractère de contrôle est refusé, avec un message.
