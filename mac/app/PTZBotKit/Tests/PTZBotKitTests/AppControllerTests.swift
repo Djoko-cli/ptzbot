@@ -473,9 +473,10 @@ extension AppControllerTests {
         #expect(go2rtcLauncher.launched.count == 1)
     }
 
-    @Test("« Quitter » avec un gardien qui ne sort pas : completion au délai de sécurité de go2rtc (16 s)")
+    @Test("« Quitter » avec un gardien qui ne sort pas : completion au délai de sécurité de go2rtc (17 s)")
     func quitGo2RTCTimeout() async throws {
         defer { try? FileManager.default.removeItem(at: root) }
+        #expect(AppController.go2rtcQuitTimeout == 17)
         let camera = go2rtc(enabled: true)
         let app = controller(go2rtc: camera)
         await app.launch()

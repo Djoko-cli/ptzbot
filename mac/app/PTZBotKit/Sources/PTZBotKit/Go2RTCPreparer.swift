@@ -20,11 +20,18 @@ public struct Go2RTCLaunch: Equatable, Sendable {
     public var ffmpegDirectory: URL?
     /// Un fichier personnalisé : ni ports ni appareils vérifiés.
     public var custom: Bool
+    /// Le port RTSP réglé, pour le ménage des ffmpeg du gardien (`--rtsp`) ; nil : pas de ménage.
+    public var rtspPort: Int?
+    /// Les empreintes des sources `exec:` du yaml généré (`--capture`) ; vides pour un fichier personnalisé : pas de
+    /// ménage des orphelins.
+    public var captures: [String]
 
-    public init(config: URL, ffmpegDirectory: URL?, custom: Bool) {
+    public init(config: URL, ffmpegDirectory: URL?, custom: Bool, rtspPort: Int? = nil, captures: [String] = []) {
         self.config = config
         self.ffmpegDirectory = ffmpegDirectory
         self.custom = custom
+        self.rtspPort = rtspPort
+        self.captures = captures
     }
 }
 
@@ -60,20 +67,23 @@ public final class Go2RTCPreparer: Go2RTCPreparing {
         Go2RTCPreparer(configURL: paths.go2rtcConfig, locator: .system(), catalog: AVFoundationDeviceCatalog(), ports: SystemPortProbe())
     }
 
-    /// Fichier personnalisé : lancé tel quel s'il se lit. Sinon : ffmpeg, appareils branchés, yaml (réécrit s'il a
-    /// changé), puis les ports RTSP (TCP), WebRTC (TCP et UDP) et l'API (127.0.0.1:1984).
+    /// Fichier personnalisé : lancé tel quel s'il se lit, avec le port RTSP réglé pour le ménage des enfants de go2rtc
+    /// (le gardien ne juge que les ffmpeg dont la sortie vise ce port) et sans empreinte. Sinon : ffmpeg, appareils
+    /// branchés, yaml (réécrit s'il a changé), puis les ports RTSP (TCP), WebRTC (TCP et UDP) et l'API (127.0.0.1:1984) ;
+    /// le port RTSP et les empreintes des sources du yaml vont au ménage.
     public func prepare(_ settings: Go2RTCSettings) async -> Go2RTCPreparation {
         if settings.customConfigEnabled {
             guard let path = settings.customConfigPath, FileManager.default.isReadableFile(atPath: path) else {
                 return .blocked(.customFileMissing)
             }
             let ffmpeg = locator.locate(configured: settings.ffmpegPath)
-            return .ready(Go2RTCLaunch(config: URL(fileURLWithPath: path), ffmpegDirectory: ffmpeg?.deletingLastPathComponent(), custom: true))
+            return .ready(Go2RTCLaunch(config: URL(fileURLWithPath: path), ffmpegDirectory: ffmpeg?.deletingLastPathComponent(), custom: true,
+                                       rtspPort: settings.rtspPort))
         }
-        let ffmpeg: URL
+        let generated: Generated
         switch generate(settings, requirePresence: true) {
         case let .failure(block): return .blocked(block)
-        case let .success(found): ffmpeg = found
+        case let .success(found): generated = found
         }
         let checks: [(Int, PortTransport, Bool)] = [
             (settings.rtspPort, .tcp, false), (settings.webrtcPort, .tcp, false), (settings.webrtcPort, .udp, false),
@@ -82,7 +92,8 @@ public final class Go2RTCPreparer: Go2RTCPreparing {
         for (port, transport, loopbackOnly) in checks where !ports.isFree(port, transport: transport, loopbackOnly: loopbackOnly) {
             return .blocked(.portBusy(port))
         }
-        return .ready(Go2RTCLaunch(config: configURL, ffmpegDirectory: ffmpeg.deletingLastPathComponent(), custom: false))
+        return .ready(Go2RTCLaunch(config: configURL, ffmpegDirectory: generated.ffmpeg.deletingLastPathComponent(), custom: false,
+                                   rtspPort: settings.rtspPort, captures: generated.captures))
     }
 
     public func writeConfig(_ settings: Go2RTCSettings) async -> Go2RTCBlock? {
@@ -93,9 +104,14 @@ public final class Go2RTCPreparer: Go2RTCPreparing {
         return nil
     }
 
-    /// ffmpeg, les noms des appareils, puis le yaml, écrit s'il a changé. Rend le chemin de ffmpeg. Sans
-    /// `requirePresence`, un appareil réglé est écrit même débranché.
-    private func generate(_ settings: Go2RTCSettings, requirePresence: Bool) -> Result<URL, Go2RTCBlock> {
+    private struct Generated {
+        var ffmpeg: URL
+        var captures: [String]
+    }
+
+    /// ffmpeg, les noms des appareils, puis le yaml, écrit s'il a changé. Rend le chemin de ffmpeg et les empreintes des
+    /// sources du yaml. Sans `requirePresence`, un appareil réglé est écrit même débranché.
+    private func generate(_ settings: Go2RTCSettings, requirePresence: Bool) -> Result<Generated, Go2RTCBlock> {
         guard let ffmpeg = locator.locate(configured: settings.ffmpegPath) else { return .failure(.ffmpegMissing) }
         let cameras = catalog.cameras()
         let microphones = catalog.microphones()
@@ -108,8 +124,10 @@ public final class Go2RTCPreparer: Go2RTCPreparing {
         guard let camera else { return .failure(.cameraMissing) }
         guard let microphone else { return .failure(.microphoneMissing) }
         let text: String
+        let captures: [String]
         do {
             text = try Go2RTCConfig.yaml(settings: settings, ffmpeg: ffmpeg.path, camera: camera, microphone: microphone)
+            captures = try Go2RTCConfig.captureFingerprints(settings: settings, ffmpeg: ffmpeg.path, camera: camera, microphone: microphone)
         } catch {
             return .failure(.invalidSettings(error.localizedDescription))
         }
@@ -118,6 +136,6 @@ public final class Go2RTCPreparer: Go2RTCPreparing {
         } catch {
             return .failure(.writeFailed(error.localizedDescription))
         }
-        return .success(ffmpeg)
+        return .success(Generated(ffmpeg: ffmpeg, captures: captures))
     }
 }

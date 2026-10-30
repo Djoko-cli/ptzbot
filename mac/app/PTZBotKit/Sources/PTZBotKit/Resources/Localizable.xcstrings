@@ -3163,6 +3163,23 @@
         }
       }
     },
+    "Des captures ffmpeg sont bloquées : nettoyage en cours": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ffmpeg captures are stuck: cleaning up"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Des captures ffmpeg sont bloquées : nettoyage en cours"
+          }
+        }
+      }
+    },
     "coreaudiod ne répond pas : la caméra est bloquée": {
       "extractionState": "manual",
       "localizations": {

@@ -1,10 +1,13 @@
 import Foundation
 
-/// Le blocage de coreaudiod (spec B3 § 5) : plus d'un ffmpeg vidéo sous go2rtc à deux contrôles de suite, ou un
-/// `exec: timeout` dans le journal depuis moins de 2 min **confirmé par deux sondes de suite** de coreaudiod qui ne
-/// répondent pas. Un timeout seul ne suffit plus : la caméra qui quitte le bus USB pendant une veille du Mac en donne un
-/// aussi (24/10) ; et une sonde lente juste après un réveil (appareils qui se réénumèrent) ne suffit pas non plus.
-/// PTZBot ne le répare jamais lui-même (il faudrait les droits root) : il donne la commande.
+/// Le blocage de coreaudiod (spec B3 § 5) : une suspicion, **confirmée par deux sondes de suite** de coreaudiod qui ne
+/// répondent pas. La suspicion vient d'un `exec: timeout` dans le journal depuis moins de 2 min, ou du **signal fort** :
+/// plus d'un ffmpeg vidéo sous go2rtc à deux contrôles de suite. Un timeout seul ne suffit plus : la caméra qui quitte
+/// le bus USB pendant une veille du Mac en donne un aussi (24/10) ; et une sonde lente juste après un réveil (appareils
+/// qui se réénumèrent) ne suffit pas non plus. Le signal fort seul ne suffit pas davantage (30/10) : après une veille
+/// qui a coupé la caméra, go2rtc relance ses ffmpeg en laissant les anciens figés sur l'appareil disparu, coreaudiod
+/// répondant très bien. Il montre alors « captures ffmpeg bloquées » (le gardien les nettoie), sans commande.
+/// PTZBot ne répare jamais coreaudiod lui-même (il faudrait les droits root) : il donne la commande.
 public enum CoreAudioDetector {
     /// Durée de la suspicion ouverte par un `exec: timeout`.
     public static let timeoutWindow: TimeInterval = 120
@@ -91,25 +94,35 @@ public struct CoreAudioWatch: Equatable, Sendable {
     }
 
     /// Le nombre de ffmpeg vidéo sous go2rtc, à un contrôle (`count` à zéro quand la surveillance s'arrête). Deux contrôles
-    /// séparés de plus de `extraVideoMaxGap` ne sont pas « de suite ».
+    /// séparés de plus de `extraVideoMaxGap` ne sont pas « de suite ». Le signal fort qui s'allume ouvre une suspicion :
+    /// neuve, elle repart sans sonde ratée.
     public mutating func videoCount(_ count: Int, now: TimeInterval) {
         guard count > 1 else {
             extraVideoStreak = 0
             lastExtraVideo = nil
             return
         }
+        let wasSuspicious = suspicious(now: now)
         if let last = lastExtraVideo, now - last > CoreAudioDetector.extraVideoMaxGap {
             extraVideoStreak = 0
         }
         extraVideoStreak += 1
         lastExtraVideo = now
+        if !wasSuspicious, suspicious(now: now) {
+            failedProbes = 0
+        }
     }
 
     /// Une sonde est en cours (lancée, sans résultat ni garde expirée).
     public var isProbing: Bool { probeStart != nil }
 
+    /// Plus d'un ffmpeg vidéo à `extraVideoChecks` contrôles de suite.
+    private var strongSignal: Bool {
+        extraVideoStreak >= CoreAudioDetector.extraVideoChecks
+    }
+
     private func suspicious(now: TimeInterval) -> Bool {
-        lastTimeout.map { now - $0 < CoreAudioDetector.timeoutWindow } ?? false
+        strongSignal || (lastTimeout.map { now - $0 < CoreAudioDetector.timeoutWindow } ?? false)
     }
 
     /// Une sonde est à lancer : suspicion ouverte, aucune sonde en cours, la dernière a au moins `probeInterval`.
@@ -152,11 +165,15 @@ public struct CoreAudioWatch: Equatable, Sendable {
         lastExtraVideo = nil
     }
 
+    /// coreaudiod est bloqué : deux sondes ratées de suite pendant la suspicion en cours.
     public func isStuck(now: TimeInterval) -> Bool {
-        if extraVideoStreak >= CoreAudioDetector.extraVideoChecks {
-            return true
-        }
-        return failedProbes >= CoreAudioDetector.failedProbesToAlert && suspicious(now: now)
+        failedProbes >= CoreAudioDetector.failedProbesToAlert && suspicious(now: now)
+    }
+
+    /// Des captures ffmpeg sont bloquées : le signal fort, sans blocage de coreaudiod confirmé. C'est aussi ce qui
+    /// s'affiche tant que les sondes n'ont pas tranché : jamais `killall coreaudiod` sur le seul signal fort.
+    public func capturesStuck(now: TimeInterval) -> Bool {
+        strongSignal && !isStuck(now: now)
     }
 }
 
@@ -266,12 +283,16 @@ public struct SystemCoreAudioProbe: CoreAudioProbe {
 /// Les alertes de go2rtc pour le panneau.
 public struct Go2RTCHealth: Equatable, Sendable {
     public var accessDenied = false
+    /// coreaudiod ne répond pas : la commande de réparation est proposée.
     public var coreAudioStuck = false
     public var cameraMissing = false
+    /// Des ffmpeg de capture en trop, coreaudiod qui répond (ou pas encore sondé) : le gardien les nettoie.
+    public var capturesStuck = false
 
-    public init(accessDenied: Bool = false, coreAudioStuck: Bool = false, cameraMissing: Bool = false) {
+    public init(accessDenied: Bool = false, coreAudioStuck: Bool = false, cameraMissing: Bool = false, capturesStuck: Bool = false) {
         self.accessDenied = accessDenied
         self.coreAudioStuck = coreAudioStuck
         self.cameraMissing = cameraMissing
+        self.capturesStuck = capturesStuck
     }
 }

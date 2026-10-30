@@ -3,7 +3,7 @@ import Observation
 
 /// La surveillance de go2rtc (spec B3 § 5) : le journal, relu toutes les 10 s tant que go2rtc tourne (refus d'accès,
 /// `exec: timeout`, qui déclenche une sonde de coreaudiod) ; et, seulement pendant que le panneau est ouvert, l'API
-/// (clients, producteur) et les processus (ffmpeg vidéo en trop), toutes les 2 s.
+/// (clients, producteur) et les processus (ffmpeg vidéo en trop, qui déclenchent aussi une sonde), toutes les 2 s.
 @MainActor
 @Observable
 public final class Go2RTCMonitor {
@@ -159,11 +159,14 @@ public final class Go2RTCMonitor {
         stream = body.flatMap { Go2RTCStreams.status(of: Go2RTCSettings.streamName, in: $0) }
         coreAudio.videoCount(output.map { CoreAudioDetector.videoFFmpegCount(psOutput: $0, root: root) } ?? 0, now: scheduler.now)
         update()
+        // Le signal fort ouvre une suspicion : coreaudiod est sondé, aux mêmes règles.
+        probeIfNeeded()
     }
 
     private func update() {
         let running = supervisor.state == .running
         health.coreAudioStuck = running && coreAudio.isStuck(now: scheduler.now)
+        health.capturesStuck = running && coreAudio.capturesStuck(now: scheduler.now)
         health.cameraMissing = running && stream?.hasActiveProducer == false
         if !running {
             health.accessDenied = false

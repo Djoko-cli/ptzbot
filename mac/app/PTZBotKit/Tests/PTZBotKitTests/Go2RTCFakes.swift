@@ -4,10 +4,14 @@ import Foundation
 /// La préparation de go2rtc simulée : le test choisit le résultat ; `holds` la retient jusqu'à `release()`.
 /// Appelée hors du fil principal (Task.detached), d'où le verrou.
 final class FakePreparer: Go2RTCPreparing, @unchecked Sendable {
+    /// Des empreintes inventées.
+    static let fingerprints = ["0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210"]
     static let readyLaunch = Go2RTCLaunch(
         config: URL(fileURLWithPath: "/support/go2rtc.yaml"),
         ffmpegDirectory: URL(fileURLWithPath: "/opt/homebrew/bin"),
-        custom: false
+        custom: false,
+        rtspPort: 8554,
+        captures: fingerprints
     )
 
     private let lock = NSLock()

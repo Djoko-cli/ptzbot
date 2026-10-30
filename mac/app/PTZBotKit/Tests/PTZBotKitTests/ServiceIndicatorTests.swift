@@ -60,6 +60,11 @@ struct ServiceIndicatorTests {
             == ServiceIndicator(tone: .attention, line: "Accès à la caméra refusé"))
         #expect(line(.running, health: Go2RTCHealth(accessDenied: true, coreAudioStuck: true))
             == ServiceIndicator(tone: .attention, line: "coreaudiod ne répond pas : la caméra est bloquée"))
+        // Captures ffmpeg bloquées, coreaudiod qui répond : orange, sans commande de réparation ; coreaudiod passe avant.
+        #expect(line(.running, health: Go2RTCHealth(accessDenied: true, cameraMissing: true, capturesStuck: true))
+            == ServiceIndicator(tone: .attention, line: "Des captures ffmpeg sont bloquées : nettoyage en cours"))
+        #expect(line(.running, health: Go2RTCHealth(coreAudioStuck: true, capturesStuck: true))
+            == ServiceIndicator(tone: .attention, line: "coreaudiod ne répond pas : la caméra est bloquée"))
     }
 
     @Test("Survol : aucun client, un client, plusieurs avec le détail par protocole ; sans lecture, rien")
@@ -76,6 +81,7 @@ struct ServiceIndicatorTests {
         Localization.$languageOverride.withValue("en") {
             #expect(Labels.go2rtcBlock(.portBusy(8554)) == "Port 8554 already in use: is another go2rtc running?")
             #expect(Labels.coreAudioStuck == "coreaudiod is not responding: the camera is stuck")
+            #expect(Labels.capturesStuck == "ffmpeg captures are stuck: cleaning up")
             #expect(Labels.quitStopsCamera == "Quitting PTZBot also stops the HomeKit camera.")
             #expect(Labels.go2rtcHelp(Go2RTCStreamStatus(clients: Go2RTCClients(byType: ["rtsp": 2]), hasActiveProducer: true)) == "2 clients · RTSP ×2")
         }

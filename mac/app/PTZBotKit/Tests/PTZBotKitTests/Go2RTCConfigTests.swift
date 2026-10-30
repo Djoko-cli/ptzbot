@@ -71,6 +71,29 @@ struct Go2RTCConfigTests {
         }
     }
 
+    @Test("Empreinte d'une source exec: : le MD5, en hexadécimal minuscule, de la source jusqu'au premier # (go2rtc 1.9.14, internal/exec)")
+    func fingerprint() {
+        let source = #"exec:/opt/test/ffmpeg -f avfoundation -i "Caméra test" -f rtsp {output}"#
+        #expect(Go2RTCConfig.fingerprint(ofSource: source) == "26888bab0748af45801d1790b51df185")
+        #expect(Go2RTCConfig.fingerprint(ofSource: source + "#timeout=30s#killsignal=15") == "26888bab0748af45801d1790b51df185")
+        #expect(Go2RTCConfig.fingerprint(ofSource: source + " -an") != "26888bab0748af45801d1790b51df185")
+    }
+
+    @Test("Les empreintes du yaml généré : une par entrée exec:, celle de l'entrée repliée telle que go2rtc la lit")
+    func captureFingerprints() throws {
+        let prints = try Go2RTCConfig.captureFingerprints(settings: Go2RTCFixtures.settings(), ffmpeg: Go2RTCFixtures.ffmpeg,
+                                                          camera: Go2RTCFixtures.camera, microphone: Go2RTCFixtures.microphone)
+        #expect(prints == foldedEntries(try yaml()).map { Go2RTCConfig.fingerprint(ofSource: $0) })
+        #expect(prints.count == 2)
+        #expect(Set(prints).count == 2)
+        #expect(prints.allSatisfy { $0.count == 32 && $0.allSatisfy { "0123456789abcdef".contains($0) } })
+        // Une autre caméra, une autre empreinte vidéo ; le micro ne change pas.
+        let other = try Go2RTCConfig.captureFingerprints(settings: Go2RTCFixtures.settings(), ffmpeg: Go2RTCFixtures.ffmpeg,
+                                                         camera: "Caméra test", microphone: Go2RTCFixtures.microphone)
+        #expect(other[0] != prints[0])
+        #expect(other[1] == prints[1])
+    }
+
     @Test("go2rtc découpe les commandes comme prévu : chaque nom d'appareil est un seul argument")
     func quoteSplitArguments() throws {
         let entries = foldedEntries(try yaml())

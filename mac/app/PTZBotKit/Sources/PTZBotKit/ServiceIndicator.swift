@@ -74,8 +74,8 @@ extension Labels {
         }
     }
 
-    /// go2rtc (spec B3 § 5) : l'état du superviseur, puis, quand il tourne, les alertes (coreaudiod d'abord). Un
-    /// fichier personnalisé le dit, pastille verte.
+    /// go2rtc (spec B3 § 5) : l'état du superviseur, puis, quand il tourne, les alertes (coreaudiod d'abord, puis les
+    /// captures ffmpeg bloquées). Un fichier personnalisé le dit, pastille verte.
     public static func go2rtcIndicator(_ state: Go2RTCSupervisor.State, isEnabled: Bool, usesCustomFile: Bool, health: Go2RTCHealth) -> ServiceIndicator {
         guard isEnabled else {
             return ServiceIndicator(tone: .neutral, line: Localization.text("Désactivé"))
@@ -92,6 +92,9 @@ extension Labels {
         case .running:
             if health.coreAudioStuck {
                 return ServiceIndicator(tone: .attention, line: coreAudioStuck)
+            }
+            if health.capturesStuck {
+                return ServiceIndicator(tone: .attention, line: capturesStuck)
             }
             if health.accessDenied {
                 return ServiceIndicator(tone: .attention, line: cameraAccessDenied)
@@ -159,6 +162,8 @@ extension Labels {
     }
 
     public static var coreAudioStuck: String { Localization.text("coreaudiod ne répond pas : la caméra est bloquée") }
+    /// Sans commande de réparation : le gardien nettoie les ffmpeg décrochés (spec B3 § 3.2).
+    public static var capturesStuck: String { Localization.text("Des captures ffmpeg sont bloquées : nettoyage en cours") }
     public static var cameraAccessDenied: String { Localization.text("Accès à la caméra refusé") }
     public static var customConfigFile: String { Localization.text("Fichier de configuration personnalisé") }
     /// La confirmation de « Quitter » quand go2rtc est allumé (spec B3 § 3.3).

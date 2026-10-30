@@ -24,6 +24,10 @@ struct Go2RTCPreparerTests {
         #expect(launch.config == config)
         #expect(launch.ffmpegDirectory?.path == "/opt/homebrew/bin")
         #expect(!launch.custom)
+        // Le ménage du gardien : le port RTSP réglé, et les empreintes des deux sources du yaml écrit.
+        #expect(launch.rtspPort == 8554)
+        #expect(launch.captures == foldedEntries(try String(contentsOf: config, encoding: .utf8)).map { Go2RTCConfig.fingerprint(ofSource: $0) })
+        #expect(launch.captures.count == 2)
         let expected = try Go2RTCConfig.yaml(settings: Go2RTCFixtures.settings(), ffmpeg: Go2RTCFixtures.ffmpeg,
                                              camera: Go2RTCFixtures.camera, microphone: Go2RTCFixtures.microphone)
         #expect(try String(contentsOf: config, encoding: .utf8) == expected)
@@ -77,7 +81,9 @@ struct Go2RTCPreparerTests {
         settings.customConfigPath = custom.path
         let ports = FakePorts()
         let result = await preparer(directory, catalog: FakeCatalog(cameraList: []), ports: ports).prepare(settings)
-        #expect(result == .ready(Go2RTCLaunch(config: URL(fileURLWithPath: custom.path), ffmpegDirectory: URL(fileURLWithPath: Go2RTCFixtures.ffmpeg).deletingLastPathComponent(), custom: true)))
+        // Le port réglé pour le ménage des enfants de go2rtc ; aucune empreinte : pas de ménage des orphelins.
+        #expect(result == .ready(Go2RTCLaunch(config: URL(fileURLWithPath: custom.path), ffmpegDirectory: URL(fileURLWithPath: Go2RTCFixtures.ffmpeg).deletingLastPathComponent(),
+                                              custom: true, rtspPort: 8554, captures: [])))
         #expect(ports.probed.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: directory.appending(path: "go2rtc.yaml").path))
         settings.customConfigPath = directory.appending(path: "absent.yaml").path

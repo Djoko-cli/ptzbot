@@ -18,7 +18,7 @@ public final class AppController {
 
     /// « Quitter » attend ptzd 5 s au plus (le superviseur envoie SIGKILL à 5 s) ; marge de sécurité.
     public static let quitTimeout: TimeInterval = 6
-    /// Avec go2rtc : son gardien reçoit SIGKILL à 15 s au plus tard ; marge de sécurité.
+    /// Avec go2rtc : son gardien reçoit SIGKILL à 16 s au plus tard ; marge de sécurité.
     public static let go2rtcQuitTimeout: TimeInterval = Go2RTCSupervisor.killDelay + 1
 
     public private(set) var legacy: Legacy = .checking

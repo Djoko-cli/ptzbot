@@ -55,7 +55,10 @@ struct Go2RTCSupervisorTests {
         #expect(preparer.onMainThread == [false])
         #expect(launcher.executables == [paths.gardien])
         let process = try #require(launcher.last)
-        #expect(process.arguments == ["--parent", "4242", "--arret", "10", "--", paths.go2rtc.path, "-config", "/support/go2rtc.yaml"])
+        #expect(process.arguments == [
+            "--parent", "4242", "--arret", "10", "--rtsp", "8554", "--capture", FakePreparer.fingerprints[0], "--capture", FakePreparer.fingerprints[1],
+            "--", paths.go2rtc.path, "-config", "/support/go2rtc.yaml",
+        ])
         #expect(launcher.environments == [["PATH": "/opt/homebrew/bin:/usr/bin:/bin"]])
         #expect(process.outputURL == paths.log)
         #expect(supervisor.gardienPID == process.pid)
@@ -169,10 +172,12 @@ struct Go2RTCSupervisorTests {
         #expect(process.kills == 0)
     }
 
-    @Test("Arrêt en douceur : le gardien laisse 10 s à go2rtc ; SIGKILL au gardien seulement à 15 s")
+    @Test("Arrêt en douceur : le gardien laisse 10 s à go2rtc, puis 5 s aux ffmpeg ; SIGKILL au gardien seulement à 16 s")
     func gentleStop() async throws {
         #expect(Go2RTCSupervisor.stopDelay >= 10)
-        #expect(Go2RTCSupervisor.killDelay > Go2RTCSupervisor.stopDelay)
+        #expect(Go2RTCSupervisor.killDelay == 16)
+        // Le pire cas du gardien (`--arret`, puis l'attente des ffmpeg, `Gardien.orphanWait` = 5 s) reste sous `killDelay`.
+        #expect(Go2RTCSupervisor.killDelay > Go2RTCSupervisor.stopDelay + Go2RTCSupervisor.gardienOrphanWait)
         let supervisor = makeSupervisor()
         await started(supervisor)
         let process = try #require(launcher.last)
@@ -306,13 +311,16 @@ struct Go2RTCSupervisorTests {
         #expect(launcher.launched.count == 1)
     }
 
-    @Test("Fichier personnalisé : lancé sur ce fichier, et l'état le sait")
+    @Test("Fichier personnalisé : lancé sur ce fichier, et l'état le sait ; --rtsp sans --capture (pas de ménage des orphelins)")
     func customFile() async throws {
-        preparer.result = .ready(Go2RTCLaunch(config: URL(fileURLWithPath: "/perso/go2rtc.yaml"), ffmpegDirectory: nil, custom: true))
+        preparer.result = .ready(Go2RTCLaunch(config: URL(fileURLWithPath: "/perso/go2rtc.yaml"), ffmpegDirectory: nil, custom: true, rtspPort: 8554))
         let supervisor = makeSupervisor()
         await started(supervisor)
         #expect(supervisor.usesCustomFile)
-        #expect(try #require(launcher.last).arguments.suffix(2) == ["-config", "/perso/go2rtc.yaml"])
+        #expect(try #require(launcher.last).arguments == ["--parent", "4242", "--arret", "10", "--rtsp", "8554", "--", paths.go2rtc.path, "-config", "/perso/go2rtc.yaml"])
+        // Sans port connu, ni --rtsp ni --capture : pas de ménage du tout.
+        #expect(supervisor.arguments(for: Go2RTCLaunch(config: URL(fileURLWithPath: "/perso/go2rtc.yaml"), ffmpegDirectory: nil, custom: true))
+            == ["--parent", "4242", "--arret", "10", "--", paths.go2rtc.path, "-config", "/perso/go2rtc.yaml"])
         #expect(launcher.environments == [["PATH": "/usr/bin:/bin"]])
     }
 

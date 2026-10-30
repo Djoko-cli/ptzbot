@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Pourquoi le yaml de go2rtc ne peut pas être écrit avec ces réglages.
@@ -33,6 +34,54 @@ public enum Go2RTCConfig {
     /// lignes au même retrait : repliées, elles ne font qu'une ligne, et `killsignal=15` n'est jamais suivi d'un saut
     /// de ligne (avec `- >`, go2rtc lirait le signal « 15\n », enverrait le signal 0, et le ffmpeg vidéo fuirait).
     public static func yaml(settings: Go2RTCSettings, ffmpeg: String, camera: String, microphone: String) throws(Go2RTCConfigError) -> String {
+        let entries = try execEntries(settings: settings, ffmpeg: ffmpeg, camera: camera, microphone: microphone)
+        var lines = [
+            "# Écrit par PTZBot (Réglages › Caméra) : ne pas modifier, PTZBot le réécrit.",
+            "# Written by PTZBot (Settings › Camera): do not edit, PTZBot rewrites it.",
+            "api:",
+            "  listen: \"127.0.0.1:\(Go2RTCSettings.apiPort)\"",
+            "rtsp:",
+            "  listen: \":\(settings.rtspPort)\"",
+            "  username: \(quoted(settings.username))",
+            "  password: \(quoted(settings.password))",
+            "webrtc:",
+            "  listen: \":\(settings.webrtcPort)\"",
+            "ffmpeg:",
+            "  bin: \(quoted(ffmpeg))",
+            "log:",
+            "  level: info",
+            "preload:",
+            "  \(Go2RTCSettings.streamName):",
+            "streams:",
+            "  \(Go2RTCSettings.streamName):",
+        ]
+        for entry in entries {
+            lines.append("    - >-")
+            lines += entry.map { "      " + $0 }
+        }
+        lines.append("    - ffmpeg:\(Go2RTCSettings.streamName)#audio=opus")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Les empreintes des entrées `exec:` du yaml (vidéo, puis micro), pour le ménage du gardien (`--capture`, spec B3
+    /// § 3.2) : le chemin RTSP de leurs ffmpeg, `rtsp://127.0.0.1:<port>/<empreinte>`.
+    public static func captureFingerprints(settings: Go2RTCSettings, ffmpeg: String, camera: String, microphone: String) throws(Go2RTCConfigError) -> [String] {
+        try execEntries(settings: settings, ffmpeg: ffmpeg, camera: camera, microphone: microphone).map {
+            fingerprint(ofSource: $0.joined(separator: " "))
+        }
+    }
+
+    /// L'empreinte d'une source `exec:` telle que go2rtc 1.9.14 la calcule (`internal/exec`, `execHandle`) : la source
+    /// coupée au premier `#` (le reste, ce sont ses paramètres), puis le MD5 de ses octets UTF-8, en hexadécimal
+    /// minuscule ; go2rtc remplace `{output}` par `rtsp://127.0.0.1:<port>/<empreinte>`. La source est l'entrée repliée
+    /// (`- >-` : lignes jointes par une espace).
+    public static func fingerprint(ofSource source: String) -> String {
+        let path = source.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        return Insecure.MD5.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Les deux entrées `exec:` (vidéo, puis micro), ligne à ligne, avant repli.
+    static func execEntries(settings: Go2RTCSettings, ffmpeg: String, camera: String, microphone: String) throws(Go2RTCConfigError) -> [[String]] {
         try validate(settings)
         let program = try argument(ffmpeg)
         let rate = settings.framerate
@@ -59,32 +108,7 @@ public enum Go2RTCConfig {
             "-vn",
             output,
         ]
-        var lines = [
-            "# Écrit par PTZBot (Réglages › Caméra) : ne pas modifier, PTZBot le réécrit.",
-            "# Written by PTZBot (Settings › Camera): do not edit, PTZBot rewrites it.",
-            "api:",
-            "  listen: \"127.0.0.1:\(Go2RTCSettings.apiPort)\"",
-            "rtsp:",
-            "  listen: \":\(settings.rtspPort)\"",
-            "  username: \(quoted(settings.username))",
-            "  password: \(quoted(settings.password))",
-            "webrtc:",
-            "  listen: \":\(settings.webrtcPort)\"",
-            "ffmpeg:",
-            "  bin: \(quoted(ffmpeg))",
-            "log:",
-            "  level: info",
-            "preload:",
-            "  \(Go2RTCSettings.streamName):",
-            "streams:",
-            "  \(Go2RTCSettings.streamName):",
-        ]
-        for entry in [video, audio] {
-            lines.append("    - >-")
-            lines += entry.map { "      " + $0 }
-        }
-        lines.append("    - ffmpeg:\(Go2RTCSettings.streamName)#audio=opus")
-        return lines.joined(separator: "\n") + "\n"
+        return [video, audio]
     }
 
     static func validate(_ settings: Go2RTCSettings) throws(Go2RTCConfigError) {

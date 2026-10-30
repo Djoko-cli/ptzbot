@@ -165,18 +165,66 @@ struct Go2RTCSignalsTests {
         #expect(CoreAudioDetector.videoFFmpegCount(psOutput: Self.ps, root: 999) == 0)
     }
 
-    @Test("coreaudiod : un ffmpeg vidéo en trop vu une seule fois n'alerte pas (redémarrage d'ffmpeg) ; deux contrôles de suite, si")
+    @Test("Un ffmpeg vidéo en trop vu une seule fois n'alerte pas (redémarrage d'ffmpeg) ; deux contrôles de suite : captures bloquées, et une sonde de coreaudiod, jamais l'alerte coreaudiod seule")
     func extraVideoTwiceInARow() {
         var watch = CoreAudioWatch()
         watch.videoCount(2, now: 0)
-        #expect(!watch.isStuck(now: 0))
+        #expect(!watch.capturesStuck(now: 0))
+        #expect(!watch.shouldProbe(now: 0))
         watch.videoCount(2, now: 2)
-        #expect(watch.isStuck(now: 2))
+        #expect(watch.capturesStuck(now: 2))
+        #expect(!watch.isStuck(now: 2), "pas de killall coreaudiod sur le seul signal fort")
+        #expect(watch.shouldProbe(now: 2))
         watch.videoCount(1, now: 4)
-        #expect(!watch.isStuck(now: 4))
+        #expect(!watch.capturesStuck(now: 4))
+        #expect(!watch.shouldProbe(now: 4))
         watch.videoCount(2, now: 6)
-        #expect(!watch.isStuck(now: 6))
+        #expect(!watch.capturesStuck(now: 6))
         #expect(CoreAudioDetector.repairCommand == "sudo killall -9 coreaudiod")
+    }
+
+    @Test("Signal fort et coreaudiod qui répond : captures bloquées, sans alerte coreaudiod ; deux sondes ratées de suite : l'alerte coreaudiod")
+    func strongSignalThenProbes() {
+        var watch = CoreAudioWatch()
+        watch.videoCount(2, now: 0)
+        watch.videoCount(2, now: 2)
+        let first = watch.probeStarted(now: 2)
+        #expect(watch.capturesStuck(now: 3), "en attendant la sonde : le texte prudent")
+        watch.probeFinished(responds: true, probe: first)
+        #expect(watch.capturesStuck(now: 4))
+        #expect(!watch.isStuck(now: 4))
+        // Le signal fort dure : une sonde toutes les 30 s au plus.
+        watch.videoCount(2, now: 4)
+        #expect(!watch.shouldProbe(now: 4))
+        #expect(watch.shouldProbe(now: 2 + CoreAudioDetector.probeInterval))
+        // Deux sondes ratées de suite : l'alerte coreaudiod, avec sa commande.
+        let second = watch.probeStarted(now: 32)
+        watch.probeFinished(responds: false, probe: second)
+        #expect(watch.capturesStuck(now: 33))
+        #expect(!watch.isStuck(now: 33))
+        let third = watch.probeStarted(now: 62)
+        watch.probeFinished(responds: false, probe: third)
+        #expect(watch.isStuck(now: 63))
+        #expect(!watch.capturesStuck(now: 63))
+        // Le signal fort s'éteint (un seul ffmpeg vidéo) : plus d'alerte.
+        watch.videoCount(1, now: 64)
+        #expect(!watch.isStuck(now: 64))
+        #expect(!watch.capturesStuck(now: 64))
+    }
+
+    @Test("Un signal fort neuf repart sans les sondes ratées d'une suspicion passée")
+    func strongSignalStartsFresh() {
+        var watch = CoreAudioWatch()
+        watch.sawTimeout(at: 0)
+        let first = watch.probeStarted(now: 0)
+        watch.probeFinished(responds: false, probe: first)
+        // La suspicion du timeout s'éteint ; bien plus tard, un signal fort.
+        watch.videoCount(2, now: 500)
+        watch.videoCount(2, now: 502)
+        let second = watch.probeStarted(now: 502)
+        watch.probeFinished(responds: false, probe: second)
+        #expect(!watch.isStuck(now: 503), "une seule sonde ratée dans cette suspicion")
+        #expect(watch.capturesStuck(now: 503))
     }
 
     @Test("coreaudiod : deux contrôles trop espacés (panneau fermé entre les deux) ne comptent pas « de suite »")
@@ -184,14 +232,14 @@ struct Go2RTCSignalsTests {
         var watch = CoreAudioWatch()
         watch.videoCount(2, now: 0)
         watch.videoCount(2, now: CoreAudioDetector.extraVideoMaxGap + 1)
-        #expect(!watch.isStuck(now: 100))
+        #expect(!watch.capturesStuck(now: 100))
         // Le second contrôle ouvre une nouvelle série : un troisième, à cadence normale, alerte.
         watch.videoCount(2, now: CoreAudioDetector.extraVideoMaxGap + 3)
-        #expect(watch.isStuck(now: 100))
+        #expect(watch.capturesStuck(now: 100))
         // Un arrêt de la surveillance remet le compte à zéro.
         watch.videoCount(0, now: 200)
         watch.videoCount(2, now: 202)
-        #expect(!watch.isStuck(now: 202))
+        #expect(!watch.capturesStuck(now: 202))
     }
 
     @Test("coreaudiod : un exec: timeout seul n'alerte pas ; il ouvre une suspicion, et la sonde qui répond la lève")
@@ -396,7 +444,7 @@ struct Go2RTCMonitorTests {
         #expect(monitor.health == Go2RTCHealth())
     }
 
-    @Test("Deux ffmpeg vidéo à deux contrôles de suite : coreaudiod bloqué ; à un seul, non ; caméra sans producteur : absente")
+    @Test("Deux ffmpeg vidéo à deux contrôles de suite : captures bloquées et une sonde ; coreaudiod qui répond : le texte reste, sans commande ; à un seul contrôle, rien ; caméra sans producteur : absente")
     func alerts() async throws {
         let directory = try Go2RTCFixtures.directory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -406,9 +454,36 @@ struct Go2RTCMonitorTests {
         await monitor.refresh()
         // Un chevauchement passager pendant un redémarrage d'ffmpeg (au réveil) : pas encore d'alerte.
         #expect(monitor.health == Go2RTCHealth(cameraMissing: true))
-        await monitor.refresh()
-        #expect(monitor.health == Go2RTCHealth(coreAudioStuck: true, cameraMissing: true))
         #expect(probe.calls == 0)
+        await monitor.refresh()
+        #expect(monitor.health == Go2RTCHealth(cameraMissing: true, capturesStuck: true))
+        await monitor.waitForProbe()
+        #expect(probe.calls == 1)
+        #expect(monitor.health == Go2RTCHealth(cameraMissing: true, capturesStuck: true))
+    }
+
+    @Test("Signal fort et deux sondes ratées de suite, à 30 s : l'alerte coreaudiod remplace celle des captures")
+    func strongSignalWithStuckCoreAudio() async throws {
+        let directory = try Go2RTCFixtures.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, monitor, _) = await running(directory)
+        api.body = StreamsFixtures.active
+        probe.responds = false
+        processes.output = "1000 1 g\n1001 1000 go2rtc\n1002 1001 ffmpeg -f avfoundation -an\n1003 1001 ffmpeg -f avfoundation -an\n"
+        await monitor.refresh()
+        await monitor.refresh()
+        await monitor.waitForProbe()
+        #expect(probe.calls == 1)
+        #expect(monitor.health == Go2RTCHealth(capturesStuck: true))
+        // Le panneau reste ouvert : un contrôle toutes les 2 s ; la seconde sonde part 30 s après la première.
+        for _ in 0..<Int(CoreAudioDetector.probeInterval / Go2RTCMonitor.pollInterval) {
+            scheduler.advance(by: Go2RTCMonitor.pollInterval)
+            await monitor.refresh()
+            await monitor.waitForProbe()
+        }
+        #expect(probe.calls == 2)
+        #expect(probe.maxRunning == 1)
+        #expect(monitor.health == Go2RTCHealth(coreAudioStuck: true))
     }
 
     @Test("Journal : un refus d'accès écrit après le lancement est vu ; avant, non ; un nouveau go2rtc l'efface")
@@ -532,16 +607,17 @@ struct Go2RTCMonitorTests {
         processes.output = "1000 1 g\n1001 1000 go2rtc\n1002 1001 ffmpeg -f avfoundation -an\n1003 1001 ffmpeg -f avfoundation -an\n"
         monitor.beginWatching()
         await monitor.waitForPoll()
-        #expect(!monitor.health.coreAudioStuck)
+        #expect(!monitor.health.capturesStuck)
         monitor.endWatching()
         // Le panneau reste fermé plus de deux minutes, puis se rouvre : le premier contrôle repart de zéro.
         scheduler.advance(by: 150)
         monitor.beginWatching()
         await monitor.waitForPoll()
-        #expect(!monitor.health.coreAudioStuck)
+        #expect(!monitor.health.capturesStuck)
         scheduler.advance(by: Go2RTCMonitor.pollInterval)
         await monitor.waitForPoll()
-        #expect(monitor.health.coreAudioStuck)
+        #expect(monitor.health.capturesStuck)
+        #expect(!monitor.health.coreAudioStuck)
     }
 
     @Test("Panneau fermé : plus de lecture de l'API ; go2rtc arrêté : ni clients ni alerte")

@@ -54,8 +54,11 @@ public final class Go2RTCSupervisor {
     /// Le délai que le gardien laisse à go2rtc entre SIGTERM et SIGKILL (`--arret`) : go2rtc arrête ses ffmpeg par
     /// SIGTERM (`killsignal=15`), jamais un ffmpeg qui capture par SIGKILL.
     public static let stopDelay: TimeInterval = 10
-    /// Le gardien lui-même ne reçoit SIGKILL qu'après ce délai, une fois son propre arrêt de go2rtc écoulé.
-    public static let killDelay: TimeInterval = 15
+    /// Le temps que le gardien laisse ensuite aux ffmpeg restants (`Gardien.orphanWait`, 4 SIGTERM à 1 s d'intervalle).
+    public static let gardienOrphanWait: TimeInterval = 5
+    /// Le gardien lui-même ne reçoit SIGKILL qu'après ce délai : son pire cas, 10 s pour go2rtc puis 5 s pour ses
+    /// ffmpeg, plus une marge d'une seconde (le journal garde ainsi la ligne « laissé en vie »).
+    public static let killDelay: TimeInterval = 16
     /// Un port vu pris au lancement : `portRetries` nouveaux essais, un tous les `portRetryDelay` secondes, avant l'échec
     /// « port déjà utilisé ». Le port d'un go2rtc qui vient de sortir (ou d'un client qui ferme) se libère en quelques
     /// instants. Une relance ultérieure reste possible, par l'interrupteur ou « Appliquer ».
@@ -136,9 +139,14 @@ public final class Go2RTCSupervisor {
         )
     }
 
-    /// `gardien --parent <PTZBot> --arret 10 -- go2rtc -config <yaml>` (spec B3 § 3.2).
-    public func arguments(config: URL) -> [String] {
-        ["--parent", String(parentPID), "--arret", String(Int(Self.stopDelay)), "--", paths.go2rtc.path, "-config", config.path]
+    /// `gardien --parent <PTZBot> --arret 10 [--rtsp <port> [--capture <md5>]…] -- go2rtc -config <yaml>` (spec B3
+    /// § 3.2) : le port RTSP réglé et les empreintes des sources du yaml généré, pour le ménage des ffmpeg décrochés.
+    public func arguments(for launch: Go2RTCLaunch) -> [String] {
+        var arguments = ["--parent", String(parentPID), "--arret", String(Int(Self.stopDelay))]
+        if let port = launch.rtspPort {
+            arguments += ["--rtsp", String(port)] + launch.captures.flatMap { ["--capture", $0] }
+        }
+        return arguments + ["--", paths.go2rtc.path, "-config", launch.config.path]
     }
 
     /// Le PATH de go2rtc : le dossier de ffmpeg d'abord, puis `/usr/bin:/bin` (la source `ffmpeg:obsbot#audio=opus`
@@ -270,7 +278,7 @@ public final class Go2RTCSupervisor {
         do {
             launched = try launcher.launch(
                 executableURL: paths.gardien,
-                arguments: arguments(config: launch.config),
+                arguments: arguments(for: launch),
                 environment: Self.environment(ffmpegDirectory: launch.ffmpegDirectory),
                 outputURL: paths.log
             ) { [weak self] exit in
