@@ -11,5 +11,7 @@ let package = Package(
         .target(name: "GardienCore"),
         .executableTarget(name: "gardien", dependencies: ["GardienCore"]),
         .testTarget(name: "GardienCoreTests", dependencies: ["GardienCore"]),
+        // Le faux ffmpeg des tests (un exécutable nommé `ffmpeg`) ; jamais embarqué : PTZBot ne construit que `gardien`.
+        .executableTarget(name: "ffmpeg", path: "Tests/FauxFFmpeg"),
     ]
 )
