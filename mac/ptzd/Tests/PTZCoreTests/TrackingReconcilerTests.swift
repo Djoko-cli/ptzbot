@@ -56,6 +56,16 @@ struct TrackingReconcilerTests {
         return controller
     }
 
+    /// Démarrage avec le suivi voulu, mais la caméra ne tient pas la relance : la lecture de confirmation la lit coupée.
+    /// Aucune lecture n'a jamais lu « activé » : une relecture périodique qui lit « coupé » relance.
+    private func trackingNeverHeld() -> PTZController {
+        let controller = started(wanted: true)
+        runner.answer(.tracking(true), effect: false)
+        scheduler.advance(by: TrackingReconciler.settleDelay)
+        runner.answer(.trackingStatus)
+        return controller
+    }
+
     private func enterNative(_ controller: PTZController) {
         runner.autoReads = true
         _ = controller.handle(.privacy(on: true), from: 1)
@@ -107,8 +117,7 @@ struct TrackingReconcilerTests {
 
     @Test("Joystick pendant une relance partie : la relance aboutit, le suivi est recoupé derrière elle, jamais rallumé")
     func joystickDuringResumeInFlight() {
-        let controller = trackingOn()
-        runner.aiMode = .off
+        let controller = trackingNeverHeld()
         scheduler.advance(by: TrackingReconciler.rereadInterval)
         runner.answer(.trackingStatus)
         #expect(runner.inFlight == .tracking(true))
@@ -252,6 +261,51 @@ struct TrackingReconcilerTests {
         #expect(runner.orders == [true, true])
     }
 
+    @Test("Réveil, premier « switching » puis lecture ratée : le « on » direct part tout de suite")
+    func wakeSwitchingThenFailedReadResumes() {
+        let controller = trackingOn()
+        controller.systemWoke()
+        runner.aiMode = .switching
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == nil)
+        scheduler.advance(by: TrackingReconciler.settleDelay)
+        #expect(runner.inFlight == .trackingStatus)
+        runner.answer(.trackingStatus, .sdkError)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+        #expect(runner.orders == [true, true])
+        withExtendedLifetime(controller) {}
+    }
+
+    @Test("Réveil, lecture écartée (condition fausse au départ) : la raison est gardée, la lecture suivante ratée relance")
+    func wakeDiscardedReadKeepsReason() {
+        let queue = AIOrderQueue(runner: runner)
+        let control = ControlTaker(runner: queue, scheduler: scheduler, isObsbotCenterRunning: { false }, log: log.sink)
+        store.state = PersistedState(privacy: false, saved: nil, aiTracking: true)
+        let tracking = TrackingReconciler(control: control, queue: queue, scheduler: scheduler, store: store, log: log.sink)
+        let flicker = Flag(false)
+        tracking.canOrder = {
+            if flicker.value {
+                flicker.value = false
+                return false
+            }
+            return true
+        }
+        // Un ordre étranger occupe l'utilitaire : la lecture attend derrière lui.
+        queue.run(on: true) { _ in }
+        #expect(runner.inFlight == .tracking(true))
+        tracking.reapply(reason: "sortie de veille", readFirst: true)
+        // La condition se révèle fausse au départ de la lecture, puis redevient vraie : lecture écartée.
+        flicker.value = true
+        runner.answer(.tracking(true))
+        #expect(runner.inFlight == nil)
+        scheduler.advance(by: TrackingReconciler.rereadInterval)
+        #expect(runner.inFlight == .trackingStatus)
+        runner.answer(.trackingStatus, .sdkError)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+    }
+
     @Test("Relance refusée : un nouvel essai 3 s plus tard, puis on s'en remet à la relecture périodique")
     func resumeFailureRetriesOnce() {
         let controller = started(wanted: true)
@@ -277,8 +331,8 @@ struct TrackingReconcilerTests {
 
     @Test("Relecture : voulu activé, lu coupé → relancé, avec sa ligne de journal")
     func rereadRelaunches() {
-        let controller = trackingOn()
-        runner.aiMode = .off
+        // La lecture d'avant ne disait pas « activé » (la relance n'a pas tenu) : lu coupé, c'est un suivi perdu.
+        let controller = trackingNeverHeld()
         scheduler.advance(by: TrackingReconciler.rereadInterval)
         #expect(runner.inFlight == .trackingStatus)
         runner.answer(.trackingStatus)
@@ -289,11 +343,108 @@ struct TrackingReconcilerTests {
         #expect(runner.orders == [true, true])
     }
 
-    @Test("Relecture : voulu activé, toujours lu coupé juste après la relance → pas de nouvelle relance avant la relecture suivante")
-    func rereadDoesNotLoop() {
+    @Test("Relecture périodique : lu activé puis lu coupé → coupure hors de PTZBot adoptée, persistée, jamais relancée")
+    func periodicOffAfterOnIsAdopted() {
         let controller = trackingOn()
+        // Geste de la main (ou OBSBOT Center) : la caméra a perdu son suivi sans qu'aucun événement ne le signale.
         runner.aiMode = .off
         scheduler.advance(by: TrackingReconciler.rereadInterval)
+        #expect(runner.inFlight == .trackingStatus)
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == nil)
+        #expect(runner.orders == [true])
+        #expect(!store.state.aiTracking)
+        #expect(controller.snapshot.aiTracking == .off)
+        #expect(log.lines.contains("Suivi IA : coupé hors de PTZBot (lu coupé après une lecture active), choix retenu « coupé »."))
+        #expect(!log.lines.contains("Suivi IA : lu coupé alors qu'il est voulu, relancé."))
+        // Les relectures suivantes ne relancent rien.
+        for _ in 0..<3 {
+            scheduler.advance(by: TrackingReconciler.rereadInterval)
+            if let order = runner.inFlight {
+                runner.answer(order)
+            }
+        }
+        #expect(runner.orders == [true])
+        // Au rebranchement suivant, rien ne repart : le choix est « coupé ».
+        controller.cameraPresenceChanged(false)
+        controller.cameraPresenceChanged(true)
+        if let order = runner.inFlight {
+            runner.answer(order)
+        }
+        #expect(runner.orders == [true])
+        #expect(!store.state.aiTracking)
+    }
+
+    @Test("Lu coupé après un réveil, alors que la lecture précédente lisait activé → relancé (événement)")
+    func offAfterWakeIsRelaunchedEvenAfterActiveRead() {
+        let controller = trackingOn()
+        runner.aiMode = .off
+        controller.systemWoke()
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+        #expect(store.state.aiTracking)
+        #expect(runner.orders == [true, true])
+        #expect(!log.lines.contains { $0.contains("coupé hors de PTZBot") })
+        withExtendedLifetime(controller) {}
+    }
+
+    @Test("Lu coupé après un rebranchement : le « on » repart sans lecture et le choix reste « activé »")
+    func offAfterReplugIsRelaunched() {
+        let controller = trackingOn()
+        runner.aiMode = .off
+        controller.cameraPresenceChanged(false)
+        controller.cameraPresenceChanged(true)
+        #expect(runner.inFlight == .tracking(true))
+        runner.answer(.tracking(true))
+        #expect(store.state.aiTracking)
+        #expect(runner.orders == [true, true])
+        #expect(!log.lines.contains { $0.contains("coupé hors de PTZBot") })
+    }
+
+    @Test("« on » envoyé par PTZBot que la caméra n'a pas tenu, puis lu coupé → relancé, pas adopté")
+    func offAfterSentOnIsRelaunched() {
+        let controller = trackingOn()
+        // Les apps coupent puis rallument ; la caméra ne tient pas le dernier « on ». La dernière lecture lisait pourtant
+        // « activé » avant ces deux ordres : elle ne vaut plus.
+        _ = controller.handle(.aiTracking(on: false), from: 1)
+        runner.answer(.tracking(false))
+        _ = controller.handle(.aiTracking(on: true), from: 1)
+        runner.answer(.tracking(true), effect: false)
+        #expect(store.state.aiTracking)
+        for _ in 0..<2 {
+            scheduler.advance(by: TrackingReconciler.rereadInterval)
+            if runner.inFlight == .trackingStatus {
+                runner.answer(.trackingStatus)
+            }
+            if runner.inFlight == .tracking(true) {
+                break
+            }
+        }
+        #expect(runner.inFlight == .tracking(true))
+        #expect(store.state.aiTracking)
+        #expect(!log.lines.contains { $0.contains("coupé hors de PTZBot") })
+        runner.answer(.tracking(true))
+    }
+
+    @Test("Relance sans effet, lue coupée deux fois de suite (jamais lue activée) → relancée, pas adoptée")
+    func neverReadOnIsNotAdopted() {
+        let controller = trackingNeverHeld()
+        scheduler.advance(by: TrackingReconciler.rereadInterval)
+        runner.answer(.trackingStatus)
+        #expect(runner.inFlight == .tracking(true))
+        #expect(store.state.aiTracking)
+        #expect(controller.snapshot.aiTracking == .off)
+        #expect(!log.lines.contains { $0.contains("coupé hors de PTZBot") })
+    }
+
+    @Test("Relecture : voulu activé, toujours lu coupé juste après la relance → pas de nouvelle relance avant la relecture suivante")
+    func rereadDoesNotLoop() {
+        let controller = trackingNeverHeld()
+        #expect(runner.inFlight == nil)
+        scheduler.advance(by: TrackingReconciler.rereadInterval - 1)
+        #expect(runner.orders == [true])
+        scheduler.advance(by: 1)
         runner.answer(.trackingStatus)
         // La relance agit, mais la caméra n'en tient pas compte.
         runner.answer(.tracking(true), effect: false)

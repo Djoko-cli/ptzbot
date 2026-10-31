@@ -6,7 +6,7 @@ import NacelleProtocol
 ///
 /// - **Le choix** : l'interrupteur des apps (ordre réussi) l'active ou le coupe ; le joystick le coupe (premier
 ///   mouvement) ; une relecture qui trouve le suivi allumé alors qu'il est voulu coupé (geste sur la caméra, caméra qui
-///   démarre en suivi) l'adopte. **La vie privée ne le change pas** : elle coupe le suivi à l'entrée (`ControlTaker`), et
+///   démarre en suivi) l'adopte, et une relecture périodique qui le trouve coupé après une lecture « activé » aussi. **La vie privée ne le change pas** : elle coupe le suivi à l'entrée (`ControlTaker`), et
 ///   il reprend à sa sortie, une fois la position rétablie.
 /// - **La réapplication** du choix « activé » (`on`) : au branchement de la caméra (et donc au démarrage de ptzd caméra
 ///   présente), au réveil du Mac, à la sortie de la vie privée et après `aiUpdated`. Un choix « coupé » n'envoie rien :
@@ -17,7 +17,9 @@ import NacelleProtocol
 ///   de la vie privée, la caméra est coupée d'office : le `on` part sans lecture.
 /// - **La relecture** de l'état réel : après chaque réapplication, puis toutes les `rereadInterval` secondes, tant que la
 ///   caméra est là et l'utilitaire gardé chaud. Lu coupé alors qu'il est voulu : relancé (une fois par relecture
-///   périodique au plus). Lu `switching` : relu un peu plus tard, sans rien conclure. L'état publié aux apps suit la
+///   périodique au plus), **sauf** si la lecture d'avant avait lu « activé » et qu'aucun événement n'est venu entre les
+///   deux : le suivi a alors été coupé hors de PTZBot (geste, OBSBOT Center), et le choix devient « coupé » comme pour le
+///   joystick. Lu `switching` : relu un peu plus tard, sans rien conclure. L'état publié aux apps suit la
 ///   dernière lecture. Un utilitaire d'avant cet ordre (« ordre inconnu ») : plus de relecture jusqu'à `aiUpdated`.
 /// - **Jamais pendant la vie privée** (voulue, en cours, caméra peut-être en mode natif, ou vérification de la position
 ///   rétablie : `canOrder`), ni pendant un ordre de suivi (coupure, ordre des apps), ni juste après (la caméra bascule
@@ -70,6 +72,10 @@ public final class TrackingReconciler {
     private var readFirstReason: String?
     /// Lectures `switching` de suite (plafonnées par `maxSwitchingReads`).
     private var switchingReads = 0
+    /// La dernière lecture a lu « activé » (et non un « on » envoyé par PTZBot) : une relecture périodique qui lit ensuite
+    /// « coupé » y voit une coupure faite hors de PTZBot. Remis à faux par tout ce qui rend cette lecture périmée : un
+    /// événement, un ordre de suivi, une lecture qui ne dit pas « activé ».
+    private var lastReadOn = false
 
     /// Un ordre de suivi peut partir à la caméra : caméra présente, ni vie privée voulue ou en cours, ni caméra peut-être
     /// en mode natif (fourni par le contrôleur).
@@ -88,6 +94,7 @@ public final class TrackingReconciler {
 
     /// Un ordre des apps a réussi : il devient le choix retenu.
     public func userChose(on: Bool) {
+        lastReadOn = false
         setWanted(on)
     }
 
@@ -160,6 +167,7 @@ public final class TrackingReconciler {
     // MARK: - Relance
 
     private func resume(reason: String) {
+        lastReadOn = false
         timer?.cancel()
         timer = nil
         step = .resuming
@@ -283,10 +291,22 @@ public final class TrackingReconciler {
                 setWanted(true)
             }
             control.observe(.on)
+            lastReadOn = true
             scheduleRead(after: Self.rereadInterval)
         case .mode(.off):
+            let wasReadOn = lastReadOn
+            lastReadOn = false
             control.observe(.off)
             guard wanted else {
+                scheduleRead(after: Self.rereadInterval)
+                return
+            }
+            if wasReadOn, readFirst == nil, !confirmation {
+                // Relecture périodique : la lecture d'avant disait « activé », celle-ci « coupé », sans événement entre les
+                // deux (branchement, réveil, vie privée, mise à jour) : le suivi a été coupé hors de PTZBot (geste de la
+                // main, OBSBOT Center). Le choix devient « coupé », comme pour le joystick, et rien ne repart.
+                log("Suivi IA : coupé hors de PTZBot (lu coupé après une lecture active), choix retenu « coupé ».")
+                setWanted(false)
                 scheduleRead(after: Self.rereadInterval)
                 return
             }
@@ -303,7 +323,9 @@ public final class TrackingReconciler {
             // La caméra bascule : rien à conclure, relu un peu plus tard (cinq fois au plus de suite : une caméra bloquée à
             // ce mode ne fait pas boucler la relecture).
             switchingReads += 1
+            lastReadOn = false
             confirming = confirmation
+            readFirstReason = readFirst
             if switchingReads >= Self.maxSwitchingReads {
                 switchingReads = 0
                 scheduleRead(after: Self.rereadInterval)
@@ -311,12 +333,17 @@ public final class TrackingReconciler {
                 scheduleRead(after: Self.settleDelay)
             }
         case .failed(.unknownOrder):
+            lastReadOn = false
             log("Suivi IA : obsbot-ai ne sait pas lire le mode IA ; plus de relecture jusqu'à sa mise à jour.")
             readsUnsupported = true
             resumeAfterFailedRead(readFirst)
         case let .failed(result):
+            lastReadOn = false
             if result != AIOrderQueue.discarded {
                 log("Suivi IA : mode IA illisible (\(result.userDescription)).")
+            } else {
+                // Lecture écartée : la raison de la réapplication reste pour la lecture suivante.
+                readFirstReason = readFirst
             }
             scheduleRead(after: Self.rereadInterval)
             if result != AIOrderQueue.discarded {
@@ -341,6 +368,7 @@ public final class TrackingReconciler {
         confirming = false
         readFirstReason = nil
         switchingReads = 0
+        lastReadOn = false
         control.resumePending = false
     }
 
