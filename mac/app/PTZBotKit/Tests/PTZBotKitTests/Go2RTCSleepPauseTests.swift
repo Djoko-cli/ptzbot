@@ -335,8 +335,8 @@ struct Go2RTCSleepPauseTests {
         #expect(launcher.launched.count == 2)
     }
 
-    @Test("Écrans éteints dans les 5 s qui suivent un réveil : la vérification est annulée, rien ne repart")
-    func screensSleepCancelsCheck() async throws {
+    @Test("Écrans éteints dans les 5 s qui suivent un réveil : la vérification est reportée à 30 s, rien ne repart écrans éteints")
+    func screensSleepPostponesCheck() async throws {
         let (supervisor, pause) = await running()
         announceSleep(pause)
         let baseline = scheduler.pendingCount
@@ -345,7 +345,11 @@ struct Go2RTCSleepPauseTests {
         scheduler.advance(by: 2)
         around.screensAwake = false
         pause.screensDidSleep()
-        #expect(scheduler.pendingCount == baseline)
+        #expect(scheduler.pendingCount == baseline + 1, "une seule vérification en attente, reportée")
+        scheduler.advance(by: 29.9)
+        #expect(around.count(startingWith: "écrans toujours éteints") == 0)
+        scheduler.advance(by: 0.1)
+        #expect(around.count(startingWith: "écrans toujours éteints") == 1)
         scheduler.advance(by: 120)
         await supervisor.waitForPreparation()
         #expect(supervisor.isPausedForSleep)

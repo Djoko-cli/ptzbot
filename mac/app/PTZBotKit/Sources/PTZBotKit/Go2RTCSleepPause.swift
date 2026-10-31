@@ -79,9 +79,12 @@ public final class Go2RTCSleepPause {
         scheduleCheck(after: Self.resumeDelay)
     }
 
-    /// Écrans éteints : une vérification en attente est annulée (retour en réveil sombre juste après un réveil).
+    /// Écrans éteints pendant la pause (retour en réveil sombre juste après un réveil) : la vérification est reportée à
+    /// `recheckInterval`. La pause garde ainsi une vérification en attente jusqu'à la reprise, même si les écrans se
+    /// rallument sans qu'aucun événement n'arrive.
     public func screensDidSleep() {
-        cancelCheck()
+        guard supervisor.isPausedForSleep else { return }
+        scheduleCheck(after: Self.recheckInterval)
     }
 
     // MARK: - Vérification de reprise

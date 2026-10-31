@@ -94,17 +94,83 @@ struct Go2RTCSupervisorTests {
         supervisor.stop {}
     }
 
-    @Test("Préparation bloquée (ffmpeg introuvable, caméra absente) : échec avec la raison, sans lancement ni relance")
+    @Test("Préparation bloquée (ffmpeg introuvable) : échec avec la raison, sans lancement ni relance")
     func blocked() async {
-        for block in [Go2RTCBlock.ffmpegMissing, .cameraMissing] {
-            preparer.result = .blocked(block)
-            let supervisor = makeSupervisor()
-            await started(supervisor)
-            #expect(supervisor.state == .failed(.blocked(block)))
-            scheduler.advance(by: 60)
-            #expect(launcher.launched.isEmpty)
-        }
+        preparer.result = .blocked(.ffmpegMissing)
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        #expect(supervisor.state == .failed(.blocked(.ffmpegMissing)))
+        scheduler.advance(by: 60)
+        #expect(launcher.launched.isEmpty)
+        #expect(preparer.prepared.count == 1)
+    }
+
+    @Test("Caméra puis micro absents au lancement (réveil, ouverture de session) : nouveaux essais toutes les 2 s ; ils reviennent, go2rtc part")
+    func devicesMissingThenBack() async throws {
+        #expect(Go2RTCSupervisor.deviceRetryDelay == 2)
+        #expect(Go2RTCSupervisor.deviceRetries == 15)
+        preparer.queued = [.blocked(.cameraMissing), .blocked(.cameraMissing), .blocked(.microphoneMissing)]
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        #expect(supervisor.state == .starting, "l'absence n'est pas annoncée tout de suite")
+        #expect(preparer.prepared.count == 1)
+        scheduler.advance(by: 1.9)
+        #expect(preparer.prepared.count == 1)
+        scheduler.advance(by: 0.1)
+        await supervisor.waitForPreparation()
         #expect(preparer.prepared.count == 2)
+        #expect(supervisor.state == .starting)
+        scheduler.advance(by: 2)
+        await supervisor.waitForPreparation()
+        scheduler.advance(by: 2)
+        await supervisor.waitForPreparation()
+        #expect(preparer.prepared.count == 4)
+        #expect(supervisor.state == .running)
+        #expect(launcher.launched.count == 1)
+    }
+
+    @Test("Caméra ou micro qui reste absent : échec « absente » après 15 essais de plus (30 s), sans relance ; l'interrupteur réessaie",
+          arguments: [Go2RTCBlock.cameraMissing, .microphoneMissing])
+    func deviceStaysMissing(_ block: Go2RTCBlock) async throws {
+        preparer.result = .blocked(block)
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        for _ in 0 ..< Go2RTCSupervisor.deviceRetries {
+            #expect(supervisor.state == .starting)
+            scheduler.advance(by: Go2RTCSupervisor.deviceRetryDelay)
+            await supervisor.waitForPreparation()
+        }
+        #expect(supervisor.state == .failed(.blocked(block)))
+        #expect(preparer.prepared.count == Go2RTCSupervisor.deviceRetries + 1)
+        scheduler.advance(by: 60)
+        #expect(preparer.prepared.count == Go2RTCSupervisor.deviceRetries + 1)
+        #expect(launcher.launched.isEmpty)
+        preparer.result = .ready(FakePreparer.readyLaunch)
+        supervisor.setEnabled(false)
+        supervisor.setEnabled(true)
+        await supervisor.waitForPreparation()
+        #expect(supervisor.state == .running)
+    }
+
+    @Test("Port pris puis caméra absente : chaque attente a son propre compte d'essais")
+    func portThenDeviceRetries() async throws {
+        preparer.queued = Array(repeating: .blocked(.portBusy(8554)), count: Go2RTCSupervisor.portRetries)
+            + Array(repeating: .blocked(.cameraMissing), count: Go2RTCSupervisor.deviceRetries)
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        for _ in 0 ..< Go2RTCSupervisor.portRetries {
+            scheduler.advance(by: Go2RTCSupervisor.portRetryDelay)
+            await supervisor.waitForPreparation()
+        }
+        for _ in 0 ..< Go2RTCSupervisor.deviceRetries - 1 {
+            #expect(supervisor.state == .starting)
+            scheduler.advance(by: Go2RTCSupervisor.deviceRetryDelay)
+            await supervisor.waitForPreparation()
+        }
+        scheduler.advance(by: Go2RTCSupervisor.deviceRetryDelay)
+        await supervisor.waitForPreparation()
+        #expect(supervisor.state == .running)
+        #expect(launcher.launched.count == 1)
     }
 
     @Test("Port pris au lancement : nouveaux essais toutes les secondes, pendant 5 s ; le port se libère, go2rtc part")
@@ -155,9 +221,10 @@ struct Go2RTCSupervisorTests {
         #expect(supervisor.state == .running)
     }
 
-    @Test("Arrêt pendant les essais de port : plus aucun essai, rien n'est lancé")
-    func stopDuringPortRetries() async {
-        preparer.result = .blocked(.portBusy(8554))
+    @Test("Arrêt pendant les essais (port pris, caméra absente) : plus aucun essai, rien n'est lancé",
+          arguments: [Go2RTCBlock.portBusy(8554), .cameraMissing])
+    func stopDuringRetries(_ block: Go2RTCBlock) async {
+        preparer.result = .blocked(block)
         let supervisor = makeSupervisor()
         await started(supervisor)
         preparer.result = .ready(FakePreparer.readyLaunch)

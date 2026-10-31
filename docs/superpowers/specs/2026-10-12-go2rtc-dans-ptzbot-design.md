@@ -427,15 +427,21 @@ Djoko le 31/10/2026, à partir d'un diagnostic fait en lecture seule.
   - **Les délais.** 20 s : macOS attend 30 s chaque client de l'annonce, et PTZBot ne doit pas devenir celui qui retarde la
     veille ; le gardien sort en 15 s au pire (10 s pour go2rtc, 5 s pour ses ffmpeg, § 13), donc 20 s lui laisse sa marge.
     5 s : un réveil complet d'une seconde, capot fermé, suivi d'un retour en réveil sombre, ne relance rien (un nouvel
-    événement de réveil reporte la vérification, des écrans éteints l'annulent). 30 s : le rythme des vérifications d'un
-    réveil sombre.
+    événement de réveil reporte la vérification, des écrans éteints la reportent à 30 s). 30 s : le rythme des
+    vérifications d'un réveil sombre.
+  - **La caméra au réveil.** La caméra USB met quelques secondes à revenir sur le bus. Une caméra ou un micro OBSBOT
+    absent au lancement de go2rtc n'est plus un échec immédiat : le superviseur réessaie la préparation toutes les **2 s**,
+    **15 fois** (30 s), avec son propre compte, à côté de celui du port pris (§ 5). Cela vaut aussi à l'ouverture de
+    session (backlog, « caméra absente au démarrage de session »).
 - **Réalisation.**
   - **`Go2RTCSupervisor`** (§ 3.3). `pauseForSleep(completion:)` arrête go2rtc comme `stop` (qui annule déjà une relance,
     un nouvel essai de port et une préparation en cours), puis `isPausedForSleep` reste vrai. `completion` est appelé à la
     sortie du gardien. S'il n'y a rien à arrêter (arrêté ou en échec, interrupteur éteint compris, ou l'app se termine),
     `completion` part tout de suite, sans pause, et l'état ne change pas : un échec reste un échec.
     `resumeAfterSleep()` lève la pause, puis lance go2rtc s'il est allumé ; si le gardien n'est pas encore sorti, go2rtc est
-    relancé à sa sortie, comme avec `setEnabled`. Sans pause, elle ne fait rien.
+    relancé à sa sortie, comme avec `setEnabled`. Sans pause, elle ne fait rien. Une préparation qui rend
+    `cameraMissing` ou `microphoneMissing` est refaite toutes les `deviceRetryDelay` (2 s), `deviceRetries` fois (15),
+    comme `portBusy` (`retryPreparation`) ; l'état reste `.starting` pendant ces essais.
   - **Garde.** Tant que la pause dure, `start()` et `restart()` ne lancent rien (« Appliquer » met les réglages de côté : la
     reprise les utilise) et `setEnabled(true)` retient l'interrupteur sans rien lancer. `setEnabled(false)` arrête comme
     avant, et la reprise ne lance alors rien. `stop(forQuit: true)` empêche toute reprise.
@@ -444,8 +450,9 @@ Djoko le 31/10/2026, à partir d'un diagnostic fait en lecture seule.
     `systemWillSleep(acknowledge:)` appelle `acknowledge` **exactement une fois**, à la fin de l'arrêt ou à 20 s, le premier
     des deux, et annule toute vérification en attente. `systemDidPowerOn()` (IOKit), `systemDidWake()` et
     `screensDidWake()` (`NSWorkspace`) programment, pendant une pause, une vérification dans 5 s (une seule à la fois, un
-    nouvel événement la reporte) ; `screensDidSleep()` l'annule. La vérification relance go2rtc si les écrans sont
-    allumés, sinon elle en programme une autre dans 30 s.
+    nouvel événement la reporte) ; `screensDidSleep()` la reporte à 30 s, pour qu'une vérification reste toujours en
+    attente pendant la pause. La vérification relance go2rtc si les écrans sont allumés, sinon elle en programme une
+    autre dans 30 s.
   - **`SystemSleepWatcher`** (PTZBotKit) : la colle d'IOKit et de `NSWorkspace`, sans logique, sur le modèle de
     `SystemWakeWatcher` de ptzd. `IORegisterForSystemPower` sur la file principale : une demande de mise en veille
     (`kIOMessageCanSystemSleep`) est acceptée tout de suite, car PTZBot ne refuse jamais une veille ; l'annonce de veille
@@ -468,6 +475,8 @@ Djoko le 31/10/2026, à partir d'un diagnostic fait en lecture seule.
     bus USB). Scrypted se reconnecte au réveil, quand go2rtc est relancé (à confirmer au banc).
   - Pendant les réveils sombres, aucune capture. Le panneau montre « Arrêté » pendant la pause : la pause ne change pas
     l'interrupteur.
+  - Une caméra encore absente à la reprise ne laisse plus go2rtc en échec : il part dès qu'elle revient, dans les 30 s.
+    Une caméra vraiment débranchée n'est annoncée « absente » qu'après ces 30 s.
 - **Au banc** (à faire par Djoko) : dans `pmset -g log`, plus de `ffmpeg timed out(30000 ms)` sous « Delays to Sleep
   notifications » ; les lignes `PTZBot : …` dans `go2rtc.log` autour d'une veille, d'un réveil sombre et d'un vrai réveil ;
   la reconnexion de Scrypted ; un capot fermé puis rouvert (réveil complet d'une seconde, puis réveil sombre) ; le gardien

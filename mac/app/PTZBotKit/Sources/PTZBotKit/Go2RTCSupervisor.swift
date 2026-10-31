@@ -65,6 +65,11 @@ public final class Go2RTCSupervisor {
     /// instants. Une relance ultérieure reste possible, par l'interrupteur ou « Appliquer ».
     public static let portRetryDelay: TimeInterval = 1
     public static let portRetries = 5
+    /// La caméra ou le micro OBSBOT absent au lancement : `deviceRetries` nouveaux essais, un tous les `deviceRetryDelay`
+    /// secondes, avant l'échec « Caméra OBSBOT absente » ou « Micro OBSBOT absent ». Au réveil du Mac (§ 15) comme à
+    /// l'ouverture de session, la caméra USB met quelques secondes à revenir sur le bus.
+    public static let deviceRetryDelay: TimeInterval = 2
+    public static let deviceRetries = 15
     public static let enabledKey = "go2rtcEnabled"
     /// Code de sortie du gardien quand go2rtc n'a pas pu être lancé.
     public static let missingBinaryStatus: Int32 = 127
@@ -99,8 +104,9 @@ public final class Go2RTCSupervisor {
     @ObservationIgnored private var restartCount = 0
     @ObservationIgnored private var unexpectedExits: [TimeInterval] = []
     @ObservationIgnored private var pendingRestart: (any Cancellable)?
-    @ObservationIgnored private var pendingPortRetry: (any Cancellable)?
+    @ObservationIgnored private var pendingRetry: (any Cancellable)?
     @ObservationIgnored private var portRetriesDone = 0
+    @ObservationIgnored private var deviceRetriesDone = 0
     @ObservationIgnored private var pendingKill: (any Cancellable)?
     @ObservationIgnored private var pendingWatchdog: (any Cancellable)?
     @ObservationIgnored private var stopping = false
@@ -183,8 +189,8 @@ public final class Go2RTCSupervisor {
         restartAfterStop = false
         pendingRestart?.cancel()
         pendingRestart = nil
-        pendingPortRetry?.cancel()
-        pendingPortRetry = nil
+        pendingRetry?.cancel()
+        pendingRetry = nil
         guard let process else {
             // Le numéro change : une préparation en cours ne lancera rien.
             generation += 1
@@ -279,6 +285,7 @@ public final class Go2RTCSupervisor {
         // Chaque lancement a son numéro : une préparation ou une fin d'un lancement déjà remplacé est ignorée.
         generation += 1
         portRetriesDone = 0
+        deviceRetriesDone = 0
         prepare(generation: generation)
     }
 
@@ -300,16 +307,29 @@ public final class Go2RTCSupervisor {
                 return
             }
             portRetriesDone += 1
-            pendingPortRetry = scheduler.schedule(after: Self.portRetryDelay) { [weak self] in
-                guard let self else { return }
-                pendingPortRetry = nil
-                guard launchedGeneration == generation, state == .starting, isEnabled, !stopping, !quitting else { return }
-                prepare(generation: launchedGeneration)
+            retryPreparation(after: Self.portRetryDelay, generation: launchedGeneration)
+        case let .blocked(block) where block == .cameraMissing || block == .microphoneMissing:
+            guard deviceRetriesDone < Self.deviceRetries else {
+                state = .failed(.blocked(block))
+                return
             }
+            deviceRetriesDone += 1
+            retryPreparation(after: Self.deviceRetryDelay, generation: launchedGeneration)
         case let .blocked(block):
             state = .failed(.blocked(block))
         case let .ready(launch):
             spawn(launch, generation: launchedGeneration)
+        }
+    }
+
+    /// Une nouvelle préparation du même lancement dans `delay` secondes (port pris, caméra ou micro absent), annulée par
+    /// un arrêt ou un lancement plus récent.
+    private func retryPreparation(after delay: TimeInterval, generation launchedGeneration: Int) {
+        pendingRetry = scheduler.schedule(after: delay) { [weak self] in
+            guard let self else { return }
+            pendingRetry = nil
+            guard launchedGeneration == generation, state == .starting, isEnabled, !stopping, !quitting else { return }
+            prepare(generation: launchedGeneration)
         }
     }
 
