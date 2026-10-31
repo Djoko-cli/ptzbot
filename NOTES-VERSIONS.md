@@ -6,6 +6,18 @@ release and to the update window.
 PTZBot pour Mac. Chaque section a un bloc **English**, puis un bloc **Français** ; les mêmes notes servent à la
 version GitHub et à la fenêtre de mise à jour.
 
+## 1.2.1
+
+**English**
+
+- **The Mac's sleep is no longer delayed by the camera captures.** go2rtc's two ffmpeg captures never answered the Mac's "going to sleep" notice, so macOS waited 30 seconds every time before sleeping. PTZBot now stops go2rtc just before the Mac sleeps (waiting 20 seconds at most) and starts it again only when the Mac really wakes up, that is when the screen has been on for 5 seconds; during brief wake-ups with the screen off, nothing captures. The camera is therefore off in HomeKit while the Mac sleeps, and go2rtc starts again a few seconds after the Mac wakes up.
+- **No more stuck ffmpeg captures after the Mac sleeps.** go2rtc no longer keeps restarting captures on a camera that has left the USB bus during sleep, so the "ffmpeg captures are stuck" alert no longer shows up after a sleep.
+
+**Français**
+
+- **La veille du Mac n'est plus retardée par les captures de la caméra.** Les deux captures ffmpeg de go2rtc n'acquittaient jamais l'annonce de mise en veille du Mac : macOS attendait 30 secondes à chaque fois avant de s'endormir. PTZBot arrête désormais go2rtc juste avant la veille du Mac (20 secondes d'attente au plus) et ne le relance qu'au vrai réveil, c'est-à-dire quand l'écran est allumé depuis 5 secondes ; pendant les brefs réveils écran éteint, rien ne capture. La caméra est donc coupée dans HomeKit pendant la veille du Mac, et go2rtc repart quelques secondes après le réveil.
+- **Plus de captures ffmpeg bloquées après une veille.** go2rtc ne relance plus sans cesse des captures sur une caméra qui a quitté le bus USB pendant la veille : l'alerte « Des captures ffmpeg sont bloquées » n'apparaît plus après une veille.
+
 ## 1.2.0
 
 **English**

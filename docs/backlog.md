@@ -2,6 +2,14 @@
 
 Idées validées par l'usage, pas encore planifiées.
 
+## Veille du Mac retardée par les captures ffmpeg de go2rtc (31/10/2026)
+
+Diagnostic du 31/10 (lecture seule) : les deux producteurs `exec:` de go2rtc (capture vidéo et capture du micro, ffmpeg avfoundation) tournent en permanence, car Scrypted reste branché. **Chaque veille du Mac est retardée de 30 s** : `pmset -g log` montre, dans « Delays to Sleep notifications », le plus souvent exactement deux `ffmpeg timed out(30000 ms)` (ffmpeg n'acquitte jamais l'annonce de veille, macOS attend 30 s avant de passer outre). **Des ffmpeg s'accumulent** : à la veille la capture se fige (la caméra quitte le bus USB), go2rtc relance une paire de ffmpeg toutes les 30 s (`[exec] timeout`), qui restent bloqués pendant les réveils sombres ; go2rtc ne leur envoie que SIGTERM (`killsignal=15`), qu'un ffmpeg figé ignore, et le ménage du gardien les retire après 180 s et deux passages. On en a vu jusqu'à 12 dans une veille, avec l'alerte « Des captures ffmpeg sont bloquées ». `killtimeout` (SIGKILL) est exclu : jamais de SIGKILL sur un ffmpeg qui capture (spec B3 § 3.2).
+
+Conception validée par Djoko (spec B3 § 15), prototypée sur la branche `fix/veille-go2rtc` pour la 1.2.1 : avant la veille, l'app arrête go2rtc par son superviseur (`pauseForSleep` : le gardien reçoit SIGTERM, go2rtc arrête ses ffmpeg, puis 4 SIGTERM à 1 s aux restants) et n'acquitte la veille qu'une fois le gardien sorti, **au plus tard après 20 s** ; au vrai réveil seulement (écrans allumés depuis 5 s), elle relance go2rtc (`resumeAfterSleep`), avec une nouvelle vérification toutes les 30 s pendant un réveil sombre. La Webcam est absente de Maison pendant la veille, comme avant. Les étapes s'écrivent dans `go2rtc.log` (`HH:mm:ss PTZBot : …`).
+
+Reste le banc : plus de `ffmpeg timed out(30000 ms)` dans `pmset -g log`, les lignes `PTZBot : …` autour d'une veille, d'un réveil sombre et d'un vrai réveil, la reconnexion de Scrypted, un capot fermé puis rouvert.
+
 ## Sensibilité du joystick
 
 Un réglage dans l'app (par exemple lente, normale, rapide, ou un curseur) qui met à l'échelle les vitesses envoyées à `ptzd`. Le plafond reste celui de `ptzd` (pan 80, tilt 120).

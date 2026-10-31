@@ -94,6 +94,8 @@ d'horloge pour les tests.
   « Quitter PTZBot arrête aussi la caméra HomeKit. »
 - **Environnement** : le `PATH` de go2rtc commence par le dossier de ffmpeg, puis `/usr/bin:/bin`. C'est nécessaire à
   la source `ffmpeg:obsbot#audio=opus`.
+- **Veille du Mac (31/10)** : le superviseur peut être mis en pause (`pauseForSleep`, `resumeAfterSleep`). go2rtc est
+  arrêté avant la veille du Mac et ne repart qu'au vrai réveil, écrans allumés. Voir le § 15.
 
 ### 3.4 Autorisations caméra et micro
 
@@ -397,3 +399,76 @@ que pendant que PTZBot est ouvert.
   - La demande d'accès à la caméra au nom de PTZBot, vue le 13/10 à l'allumage de go2rtc, vient de la recherche des
     appareils de PTZBot lui-même (liste des caméras de l'onglet « Caméra »), pas de ffmpeg.
   - L'essai d'un ffmpeg qui ignore SIGTERM sous `AbandonProcessGroup` n'a pas été fait : il est au backlog.
+
+## 15. La veille du Mac (31/10/2026)
+
+Ce paragraphe ajoute un cas au § 3.3 : go2rtc est arrêté avant la veille du Mac et ne repart qu'au vrai réveil. Conçu avec
+Djoko le 31/10/2026, à partir d'un diagnostic fait en lecture seule.
+
+- **Le problème.** Les deux producteurs `exec:` de go2rtc (la capture vidéo et la capture du micro, deux ffmpeg
+  avfoundation) tournent en permanence, car Scrypted reste branché.
+  - **Chaque veille du Mac est retardée de 30 s.** `pmset -g log` montre, dans « Delays to Sleep notifications », le plus
+    souvent exactement deux `ffmpeg timed out(30000 ms)` : ffmpeg n'acquitte jamais l'annonce de veille, et macOS attend
+    30 s avant de passer outre.
+  - **Des ffmpeg s'accumulent.** À la veille, la capture se fige (la caméra quitte le bus USB). go2rtc relance une paire de
+    ffmpeg toutes les 30 s (`[exec] timeout`), qui restent bloqués sur l'appareil absent pendant les réveils sombres.
+    go2rtc ne leur envoie que SIGTERM (`killsignal=15`), qu'un ffmpeg figé ignore ; le ménage du gardien (§ 3.2) les
+    retire après 180 s et deux passages. On en a vu jusqu'à 12 pendant une veille, et l'alerte « Des captures ffmpeg sont
+    bloquées » apparaît.
+  - **`killtimeout` (SIGKILL) est exclu** : jamais de SIGKILL sur un ffmpeg qui capture (règle du § 3.2, risque de
+    bloquer coreaudiod).
+- **La conception (validée par Djoko).**
+  - **Avant la veille**, l'app arrête go2rtc par son superviseur : le gardien reçoit SIGTERM, go2rtc arrête ses ffmpeg,
+    puis le gardien envoie 4 SIGTERM à 1 s d'intervalle aux ffmpeg restants (§ 3.2, § 13). Elle n'acquitte la veille
+    qu'une fois le gardien sorti, **au plus tard 20 s** après l'annonce.
+  - **Au vrai réveil seulement**, c'est-à-dire écrans allumés depuis **5 s**, l'app relance go2rtc. Pendant les réveils
+    sombres (écrans éteints), aucune capture : tant que la pause dure et que les écrans restent éteints, une nouvelle
+    vérification a lieu toutes les **30 s**.
+  - **Les délais.** 20 s : macOS attend 30 s chaque client de l'annonce, et PTZBot ne doit pas devenir celui qui retarde la
+    veille ; le gardien sort en 15 s au pire (10 s pour go2rtc, 5 s pour ses ffmpeg, § 13), donc 20 s lui laisse sa marge.
+    5 s : un réveil complet d'une seconde, capot fermé, suivi d'un retour en réveil sombre, ne relance rien (un nouvel
+    événement de réveil reporte la vérification, des écrans éteints l'annulent). 30 s : le rythme des vérifications d'un
+    réveil sombre.
+- **Réalisation.**
+  - **`Go2RTCSupervisor`** (§ 3.3). `pauseForSleep(completion:)` arrête go2rtc comme `stop` (qui annule déjà une relance,
+    un nouvel essai de port et une préparation en cours), puis `isPausedForSleep` reste vrai. `completion` est appelé à la
+    sortie du gardien. S'il n'y a rien à arrêter (arrêté ou en échec, interrupteur éteint compris, ou l'app se termine),
+    `completion` part tout de suite, sans pause, et l'état ne change pas : un échec reste un échec.
+    `resumeAfterSleep()` lève la pause, puis lance go2rtc s'il est allumé ; si le gardien n'est pas encore sorti, go2rtc est
+    relancé à sa sortie, comme avec `setEnabled`. Sans pause, elle ne fait rien.
+  - **Garde.** Tant que la pause dure, `start()` et `restart()` ne lancent rien (« Appliquer » met les réglages de côté : la
+    reprise les utilise) et `setEnabled(true)` retient l'interrupteur sans rien lancer. `setEnabled(false)` arrête comme
+    avant, et la reprise ne lance alors rien. `stop(forQuit: true)` empêche toute reprise.
+  - **`Go2RTCSleepPause`** (PTZBotKit) : la logique entre les événements d'alimentation et le superviseur. Le temps vient du
+    `Scheduler` injecté, les écrans d'un prédicat injecté : les tests (`FakeScheduler`) maîtrisent les deux.
+    `systemWillSleep(acknowledge:)` appelle `acknowledge` **exactement une fois**, à la fin de l'arrêt ou à 20 s, le premier
+    des deux, et annule toute vérification en attente. `systemDidPowerOn()` (IOKit), `systemDidWake()` et
+    `screensDidWake()` (`NSWorkspace`) programment, pendant une pause, une vérification dans 5 s (une seule à la fois, un
+    nouvel événement la reporte) ; `screensDidSleep()` l'annule. La vérification relance go2rtc si les écrans sont
+    allumés, sinon elle en programme une autre dans 30 s.
+  - **`SystemSleepWatcher`** (PTZBotKit) : la colle d'IOKit et de `NSWorkspace`, sans logique, sur le modèle de
+    `SystemWakeWatcher` de ptzd. `IORegisterForSystemPower` sur la file principale : une demande de mise en veille
+    (`kIOMessageCanSystemSleep`) est acceptée tout de suite, car PTZBot ne refuse jamais une veille ; l'annonce de veille
+    (`kIOMessageSystemWillSleep`) n'est acquittée (`IOAllowPowerChange`) que par la pause ; la sortie de veille
+    (`kIOMessageSystemHasPoweredOn`) lui est signalée. Les écrans sont allumés quand `CGDisplayIsAsleep(CGMainDisplayID())`
+    vaut 0. L'objet est créé par `AppDelegate`, qui le garde aussi longtemps que l'app (le port IOKit garde un pointeur
+    non retenu), et armé avant le lancement de go2rtc.
+  - **Journal.** Pour le banc, la pause écrit ses étapes dans `go2rtc.log`, à la suite du gardien et de go2rtc (fichier
+    ouvert en ajout, une écriture par ligne, erreurs ignorées), sous la forme `HH:mm:ss PTZBot : …` (heure locale) :
+    « veille annoncée : go2rtc s'arrête avant la veille » ; « go2rtc arrêté en 2,4 s : la veille peut partir » ;
+    « go2rtc toujours en cours d'arrêt après 20 s : la veille part quand même » ; « veille annoncée : go2rtc ne tournait
+    pas » ; « sortie de veille : reprise de go2rtc si les écrans restent allumés 5 s » (seulement pendant une pause) ;
+    « écrans toujours éteints (réveil sombre) : go2rtc reste arrêté » ; « réveil complet : go2rtc relancé » (ou « réveil
+    complet : go2rtc éteint, rien à relancer » si l'interrupteur a été éteint pendant la pause). Aucune ne contient un motif
+    que `Go2RTCLogPatterns` reconnaît (§ 5) : un test le vérifie.
+- **Ce que ça change.**
+  - La veille du Mac n'est plus retardée de 30 s par les captures, et plus aucun ffmpeg ne reste bloqué après une veille :
+    plus de `[exec] timeout` ni d'alerte « Des captures ffmpeg sont bloquées » au réveil.
+  - La Webcam est absente de Maison pendant la veille, comme avant (l'image se figeait déjà quand la caméra quittait le
+    bus USB). Scrypted se reconnecte au réveil, quand go2rtc est relancé (à confirmer au banc).
+  - Pendant les réveils sombres, aucune capture. Le panneau montre « Arrêté » pendant la pause : la pause ne change pas
+    l'interrupteur.
+- **Au banc** (à faire par Djoko) : dans `pmset -g log`, plus de `ffmpeg timed out(30000 ms)` sous « Delays to Sleep
+  notifications » ; les lignes `PTZBot : …` dans `go2rtc.log` autour d'une veille, d'un réveil sombre et d'un vrai réveil ;
+  la reconnexion de Scrypted ; un capot fermé puis rouvert (réveil complet d'une seconde, puis réveil sombre) ; le gardien
+  qui sort en moins de 20 s dans les conditions réelles.
