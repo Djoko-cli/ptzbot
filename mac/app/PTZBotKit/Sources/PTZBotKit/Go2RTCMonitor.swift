@@ -167,6 +167,7 @@ public final class Go2RTCMonitor {
         let running = supervisor.state == .running
         health.coreAudioStuck = running && coreAudio.isStuck(now: scheduler.now)
         health.capturesStuck = running && coreAudio.capturesStuck(now: scheduler.now)
+        health.capturesStuckLong = running && coreAudio.capturesStuckLong(now: scheduler.now)
         health.cameraMissing = running && stream?.hasActiveProducer == false
         if !running {
             health.accessDenied = false

@@ -25,6 +25,9 @@ public enum CoreAudioDetector {
     public static let extraVideoChecks = 2
     /// Au-delà de ce délai entre deux contrôles (deux fois la lecture de 2 s du panneau), ils ne sont plus « de suite ».
     public static let extraVideoMaxGap: TimeInterval = 4
+    /// Le signal fort qui dure plus longtemps que cela (le gardien nettoie en moins d'une minute quand il le peut) change
+    /// le texte du panneau : plus de « nettoyage » promis, mais un renvoi au journal.
+    public static let capturesStuckLongDelay: TimeInterval = 300
     public static let repairCommand = "sudo killall -9 coreaudiod"
 
     /// Une ligne de `ps -A -ww -o pid=,ppid=,command=`.
@@ -81,6 +84,8 @@ public struct CoreAudioWatch: Equatable, Sendable {
     /// Contrôles de suite où plus d'un ffmpeg vidéo a été vu, et l'heure du dernier.
     private var extraVideoStreak = 0
     private var lastExtraVideo: TimeInterval?
+    /// L'heure où le signal fort s'est allumé (la série a atteint `extraVideoChecks`) : le texte long en dépend.
+    private var strongSince: TimeInterval?
 
     public init() {}
 
@@ -100,14 +105,19 @@ public struct CoreAudioWatch: Equatable, Sendable {
         guard count > 1 else {
             extraVideoStreak = 0
             lastExtraVideo = nil
+            strongSince = nil
             return
         }
         let wasSuspicious = suspicious(now: now)
         if let last = lastExtraVideo, now - last > CoreAudioDetector.extraVideoMaxGap {
             extraVideoStreak = 0
+            strongSince = nil
         }
         extraVideoStreak += 1
         lastExtraVideo = now
+        if strongSignal, strongSince == nil {
+            strongSince = now
+        }
         if !wasSuspicious, suspicious(now: now) {
             failedProbes = 0
         }
@@ -161,8 +171,10 @@ public struct CoreAudioWatch: Equatable, Sendable {
         lastTimeout = nil
         failedProbes = 0
         probeStart = nil
+        lastProbe = nil
         extraVideoStreak = 0
         lastExtraVideo = nil
+        strongSince = nil
     }
 
     /// coreaudiod est bloqué : deux sondes ratées de suite pendant la suspicion en cours.
@@ -174,6 +186,13 @@ public struct CoreAudioWatch: Equatable, Sendable {
     /// s'affiche tant que les sondes n'ont pas tranché : jamais `killall coreaudiod` sur le seul signal fort.
     public func capturesStuck(now: TimeInterval) -> Bool {
         strongSignal && !isStuck(now: now)
+    }
+
+    /// Les captures sont bloquées depuis plus de `capturesStuckLongDelay` : le gardien n'y arrive pas (ffmpeg figé dans le
+    /// noyau, sockets illisibles, épargné après 4 SIGTERM), le texte renvoie au journal.
+    public func capturesStuckLong(now: TimeInterval) -> Bool {
+        guard capturesStuck(now: now), let since = strongSince else { return false }
+        return now - since >= CoreAudioDetector.capturesStuckLongDelay
     }
 }
 
@@ -288,11 +307,15 @@ public struct Go2RTCHealth: Equatable, Sendable {
     public var cameraMissing = false
     /// Des ffmpeg de capture en trop, coreaudiod qui répond (ou pas encore sondé) : le gardien les nettoie.
     public var capturesStuck = false
+    /// Les captures bloquées durent depuis plus de `CoreAudioDetector.capturesStuckLongDelay` : le texte renvoie au journal.
+    public var capturesStuckLong = false
 
-    public init(accessDenied: Bool = false, coreAudioStuck: Bool = false, cameraMissing: Bool = false, capturesStuck: Bool = false) {
+    public init(accessDenied: Bool = false, coreAudioStuck: Bool = false, cameraMissing: Bool = false, capturesStuck: Bool = false,
+                capturesStuckLong: Bool = false) {
         self.accessDenied = accessDenied
         self.coreAudioStuck = coreAudioStuck
         self.cameraMissing = cameraMissing
         self.capturesStuck = capturesStuck
+        self.capturesStuckLong = capturesStuckLong
     }
 }

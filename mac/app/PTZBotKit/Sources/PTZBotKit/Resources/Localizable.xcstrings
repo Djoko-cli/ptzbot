@@ -3163,19 +3163,36 @@
         }
       }
     },
-    "Des captures ffmpeg sont bloquées : nettoyage en cours": {
+    "Des captures ffmpeg sont bloquées": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "ffmpeg captures are stuck: cleaning up"
+            "value": "ffmpeg captures are stuck"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Des captures ffmpeg sont bloquées : nettoyage en cours"
+            "value": "Des captures ffmpeg sont bloquées"
+          }
+        }
+      }
+    },
+    "Des captures ffmpeg sont bloquées : ouvrez le journal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ffmpeg captures are stuck: open the log"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Des captures ffmpeg sont bloquées : ouvrez le journal"
           }
         }
       }

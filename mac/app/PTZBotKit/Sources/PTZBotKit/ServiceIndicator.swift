@@ -94,7 +94,7 @@ extension Labels {
                 return ServiceIndicator(tone: .attention, line: coreAudioStuck)
             }
             if health.capturesStuck {
-                return ServiceIndicator(tone: .attention, line: capturesStuck)
+                return ServiceIndicator(tone: .attention, line: health.capturesStuckLong ? capturesStuckLong : capturesStuck)
             }
             if health.accessDenied {
                 return ServiceIndicator(tone: .attention, line: cameraAccessDenied)
@@ -162,8 +162,10 @@ extension Labels {
     }
 
     public static var coreAudioStuck: String { Localization.text("coreaudiod ne répond pas : la caméra est bloquée") }
-    /// Sans commande de réparation : le gardien nettoie les ffmpeg décrochés (spec B3 § 3.2).
-    public static var capturesStuck: String { Localization.text("Des captures ffmpeg sont bloquées : nettoyage en cours") }
+    /// Sans commande de réparation, et sans promesse : le gardien nettoie les ffmpeg décrochés quand il le peut (spec B3 § 3.2).
+    public static var capturesStuck: String { Localization.text("Des captures ffmpeg sont bloquées") }
+    /// Quand le blocage dure : le gardien n'y arrive pas, le journal dit pourquoi.
+    public static var capturesStuckLong: String { Localization.text("Des captures ffmpeg sont bloquées : ouvrez le journal") }
     public static var cameraAccessDenied: String { Localization.text("Accès à la caméra refusé") }
     public static var customConfigFile: String { Localization.text("Fichier de configuration personnalisé") }
     /// La confirmation de « Quitter » quand go2rtc est allumé (spec B3 § 3.3).

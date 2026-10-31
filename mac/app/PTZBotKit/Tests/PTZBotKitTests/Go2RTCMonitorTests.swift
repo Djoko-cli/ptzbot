@@ -212,6 +212,46 @@ struct Go2RTCSignalsTests {
         #expect(!watch.capturesStuck(now: 64))
     }
 
+    @Test("Captures bloquées : texte neutre au départ, texte « ouvrez le journal » quand le signal fort dure au-delà de 5 min")
+    func capturesStuckBecomesLong() {
+        var watch = CoreAudioWatch()
+        watch.videoCount(2, now: 0)
+        watch.videoCount(2, now: 2)
+        #expect(watch.capturesStuck(now: 2))
+        #expect(!watch.capturesStuckLong(now: 2))
+        // Le signal fort dure, contrôlé toutes les 2 s : juste avant le seuil, toujours le texte neutre.
+        var now: TimeInterval = 2
+        while now + 2 < 2 + CoreAudioDetector.capturesStuckLongDelay {
+            now += 2
+            watch.videoCount(2, now: now)
+        }
+        #expect(!watch.capturesStuckLong(now: now))
+        now += 2
+        watch.videoCount(2, now: now)
+        #expect(watch.capturesStuckLong(now: now))
+        #expect(watch.capturesStuck(now: now))
+        // Le signal s'éteint : tout disparaît, et un signal neuf repart du texte neutre.
+        watch.videoCount(1, now: now + 2)
+        #expect(!watch.capturesStuck(now: now + 2))
+        #expect(!watch.capturesStuckLong(now: now + 2))
+        watch.videoCount(2, now: now + 4)
+        watch.videoCount(2, now: now + 6)
+        #expect(watch.capturesStuck(now: now + 6))
+        #expect(!watch.capturesStuckLong(now: now + 6))
+    }
+
+    @Test("Un nouveau go2rtc remet à zéro la dernière sonde : une nouvelle suspicion sonde sans attendre les 30 s")
+    func resetForgetsLastProbe() {
+        var watch = CoreAudioWatch()
+        watch.sawTimeout(at: 100)
+        let probe = watch.probeStarted(now: 100)
+        watch.probeFinished(responds: true, probe: probe)
+        // go2rtc est relancé 10 s plus tard et reprend aussitôt un timeout : sonder sans attendre.
+        watch.reset()
+        watch.sawTimeout(at: 110)
+        #expect(watch.shouldProbe(now: 110))
+    }
+
     @Test("Un signal fort neuf repart sans les sondes ratées d'une suspicion passée")
     func strongSignalStartsFresh() {
         var watch = CoreAudioWatch()
@@ -460,6 +500,25 @@ struct Go2RTCMonitorTests {
         await monitor.waitForProbe()
         #expect(probe.calls == 1)
         #expect(monitor.health == Go2RTCHealth(cameraMissing: true, capturesStuck: true))
+    }
+
+    @Test("Captures bloquées depuis plus de 5 min : le moniteur publie le drapeau « long » en plus des captures bloquées")
+    func capturesStuckLongThroughMonitor() async throws {
+        let directory = try Go2RTCFixtures.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, monitor, _) = await running(directory)
+        api.body = StreamsFixtures.active
+        processes.output = "1000 1 g\n1001 1000 go2rtc\n1002 1001 ffmpeg -f avfoundation -an\n1003 1001 ffmpeg -f avfoundation -an\n"
+        await monitor.refresh()
+        await monitor.refresh()
+        await monitor.waitForProbe()
+        #expect(monitor.health == Go2RTCHealth(capturesStuck: true))
+        for _ in 0..<Int(CoreAudioDetector.capturesStuckLongDelay / Go2RTCMonitor.pollInterval) + 1 {
+            scheduler.advance(by: Go2RTCMonitor.pollInterval)
+            await monitor.refresh()
+        }
+        await monitor.waitForProbe()
+        #expect(monitor.health == Go2RTCHealth(capturesStuck: true, capturesStuckLong: true))
     }
 
     @Test("Signal fort et deux sondes ratées de suite, à 30 s : l'alerte coreaudiod remplace celle des captures")
