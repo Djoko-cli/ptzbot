@@ -56,6 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let go2rtc: Go2RTCSupervisor
     let go2rtcMonitor: Go2RTCMonitor
     let cameraSettings: Go2RTCSettingsModel
+    /// La veille du Mac : go2rtc s'arrête avant, et ne repart qu'au vrai réveil (spec B3, § 15). Vit autant que l'app :
+    /// le port IOKit garde un pointeur non retenu vers lui.
+    let sleepWatcher: SystemSleepWatcher
     private var started = false
 
     override init() {
@@ -74,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let preparer = Go2RTCPreparer.system(paths: paths)
         go2rtc = .system(paths: paths, preparer: preparer, scheduler: scheduler)
         go2rtcMonitor = .system(supervisor: go2rtc, paths: paths, scheduler: scheduler)
+        sleepWatcher = SystemSleepWatcher(pause: .system(supervisor: go2rtc, paths: paths, scheduler: scheduler))
         cameraSettings = .system(supervisor: go2rtc, preparer: preparer)
         controller = AppController(
             supervisor: .system(paths: paths.service, scheduler: scheduler),
@@ -131,6 +135,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !go2rtc.isEnabled {
             LaunchdProcessLauncher.removeLeftoverInBackground(supportDirectory: AppPaths.system().support)
         }
+        // Armée avant le lancement de go2rtc : aucune annonce de veille ne lui échappe.
+        sleepWatcher.start()
         go2rtcMonitor.start()
         Task { await controller.launch() }
     }
