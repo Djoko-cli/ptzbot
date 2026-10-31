@@ -16,7 +16,8 @@ public enum Go2RTCFailure: Equatable, Sendable {
 }
 
 /// Lance go2rtc par le gardien (spec B3 § 3.2 et § 3.3 ; lancé par launchd, § 14), le relance s'il s'arrête et
-/// l'arrête en douceur. Sur le modèle de `ServiceSupervisor` (ptzd), avec une préparation avant chaque lancement.
+/// l'arrête en douceur, aussi avant la veille du Mac (§ 15). Sur le modèle de `ServiceSupervisor` (ptzd), avec une
+/// préparation avant chaque lancement.
 /// Éteint par défaut : il ne doit pas prendre la caméra de quelqu'un qui a déjà son go2rtc.
 @MainActor
 @Observable
@@ -75,6 +76,9 @@ public final class Go2RTCSupervisor {
     public private(set) var usesCustomFile = false
     /// Le pid du gardien en cours : go2rtc et ses ffmpeg en descendent (détecteur de coreaudiod).
     public private(set) var gardienPID: pid_t?
+    /// Le Mac va dormir, ou dort : go2rtc est arrêté en attendant le vrai réveil, et `start()` et `restart()` ne lancent
+    /// rien (`pauseForSleep`, `resumeAfterSleep`, spec B3 § 15).
+    public private(set) var isPausedForSleep = false
     /// Le nombre de lancements : la surveillance du journal repart de zéro à chaque nouveau go2rtc.
     public private(set) var launchCount = 0
     /// La taille du journal au dernier lancement : la surveillance n'en lit que la suite.
@@ -155,9 +159,10 @@ public final class Go2RTCSupervisor {
         ["PATH": ((ffmpegDirectory.map { [$0.path] } ?? []) + ["/usr/bin", "/bin"]).joined(separator: ":")]
     }
 
-    /// Lance go2rtc s'il est autorisé et ne tourne pas déjà. Depuis `failed`, repart de zéro.
+    /// Lance go2rtc s'il est autorisé et ne tourne pas déjà. Depuis `failed`, repart de zéro. Rien pendant la pause de
+    /// veille : `resumeAfterSleep()` lancera.
     public func start() {
-        guard isEnabled, !stopping, !quitting else { return }
+        guard isEnabled, !stopping, !quitting, !isPausedForSleep else { return }
         switch state {
         case .stopped, .failed:
             restartCount = 0
@@ -214,15 +219,51 @@ public final class Go2RTCSupervisor {
         }
     }
 
-    /// « Appliquer » : go2rtc s'arrête en douceur, puis repart sur `configuration`.
+    /// « Appliquer » : go2rtc s'arrête en douceur, puis repart sur `configuration`. Pendant la pause de veille, rien :
+    /// go2rtc est déjà arrêté, et la reprise repart sur `configuration`.
     public func restart() {
-        guard isEnabled, !quitting else { return }
+        guard isEnabled, !quitting, !isPausedForSleep else { return }
         if stopping {
             restartAfterStop = true
             return
         }
         stop { [weak self] in
             self?.start()
+        }
+    }
+
+    /// Une veille doit d'abord arrêter go2rtc : il démarre, tourne ou attend sa relance, et l'app ne se termine pas.
+    /// Arrêté ou en échec (interrupteur éteint compris), il n'y a rien à arrêter ni à reprendre.
+    var needsStopBeforeSleep: Bool {
+        guard !quitting else { return false }
+        switch state {
+        case .starting, .running, .restarting: return true
+        case .stopped, .failed: return false
+        }
+    }
+
+    /// Le Mac annonce sa veille : go2rtc s'arrête en douceur, comme avec `stop`, et ne repart qu'à `resumeAfterSleep()`.
+    /// Sans cela, ses ffmpeg de capture, qui ne répondent jamais à l'annonce, retardent la veille de 30 s (spec B3 § 15).
+    /// `completion` quand le gardien est sorti ; tout de suite, sans pause et sans changer l'état, s'il n'y a rien à
+    /// arrêter (arrêté, en échec, interrupteur éteint, ou l'app se termine).
+    public func pauseForSleep(completion: @escaping @MainActor () -> Void) {
+        guard needsStopBeforeSleep else {
+            completion()
+            return
+        }
+        isPausedForSleep = true
+        stop(completion: completion)
+    }
+
+    /// Le vrai réveil : go2rtc repart s'il est allumé. Si le gardien n'est pas encore sorti, il est relancé à sa sortie,
+    /// comme avec `setEnabled`. Sans effet hors d'une pause.
+    public func resumeAfterSleep() {
+        guard isPausedForSleep else { return }
+        isPausedForSleep = false
+        if stopping {
+            restartAfterStop = !quitting
+        } else {
+            start()
         }
     }
 

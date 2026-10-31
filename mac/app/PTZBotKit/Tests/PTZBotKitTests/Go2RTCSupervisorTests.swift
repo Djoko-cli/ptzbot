@@ -2,6 +2,21 @@ import Foundation
 import Testing
 @testable import PTZBotKit
 
+/// Ce qui n'a rien à arrêter avant une veille du Mac : go2rtc ne tourne pas.
+enum NothingToStop: CaseIterable, Sendable, CustomTestStringConvertible {
+    case stopped
+    case switchedOff
+    case failed
+
+    var testDescription: String {
+        switch self {
+        case .stopped: "arrêté"
+        case .switchedOff: "interrupteur éteint"
+        case .failed: "en échec"
+        }
+    }
+}
+
 @MainActor
 @Suite("Supervision de go2rtc", .french, .timeLimit(.minutes(1)))
 struct Go2RTCSupervisorTests {
@@ -309,6 +324,220 @@ struct Go2RTCSupervisorTests {
         supervisor.start()
         await supervisor.waitForPreparation()
         #expect(launcher.launched.count == 1)
+    }
+
+    // MARK: - Pause de veille (spec B3 § 15)
+
+    @Test("Veille : arrêt en douceur, completion à la sortie du gardien ; en pause, start(), restart() et setEnabled(true) ne lancent rien ; la reprise relance")
+    func pauseForSleep() async throws {
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        let process = try #require(launcher.last)
+        process.ignoresTerminate = true
+        var done = 0
+        supervisor.pauseForSleep { done += 1 }
+        #expect(supervisor.isPausedForSleep)
+        #expect(process.terminations == 1)
+        #expect(done == 0)
+        #expect(supervisor.state == .running, "jusqu'à la sortie du gardien")
+        process.exit(ProcessExit(status: SIGTERM, signaled: true))
+        #expect(done == 1)
+        #expect(supervisor.state == .stopped)
+        #expect(supervisor.gardienPID == nil)
+        #expect(process.kills == 0)
+
+        supervisor.start()
+        supervisor.restart()
+        supervisor.setEnabled(true)
+        await supervisor.waitForPreparation()
+        scheduler.advance(by: 60)
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 1)
+        #expect(supervisor.state == .stopped)
+        #expect(supervisor.isEnabled)
+        #expect(supervisor.isPausedForSleep)
+
+        supervisor.resumeAfterSleep()
+        #expect(!supervisor.isPausedForSleep)
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 2)
+        #expect(supervisor.state == .running)
+        // Hors d'une pause, la reprise ne fait rien.
+        supervisor.resumeAfterSleep()
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 2)
+    }
+
+    @Test("Veille sans rien à arrêter (arrêté, interrupteur éteint, en échec) : completion tout de suite, pas de pause, état inchangé",
+          arguments: NothingToStop.allCases)
+    func pauseForSleepNothingToStop(_ situation: NothingToStop) async {
+        let supervisor = makeSupervisor(enabled: situation != .switchedOff)
+        if situation == .failed {
+            preparer.result = .blocked(.ffmpegMissing)
+            await started(supervisor)
+        }
+        let state = supervisor.state
+        var done = 0
+        supervisor.pauseForSleep { done += 1 }
+        #expect(done == 1)
+        #expect(!supervisor.isPausedForSleep)
+        #expect(supervisor.state == state)
+        // Sans pause, la reprise ne relance rien : un échec reste un échec.
+        preparer.result = .ready(FakePreparer.readyLaunch)
+        supervisor.resumeAfterSleep()
+        await supervisor.waitForPreparation()
+        #expect(supervisor.state == state)
+        #expect(launcher.launched.isEmpty)
+    }
+
+    @Test("Veille pendant une relance programmée : relance annulée, completion tout de suite, en pause ; la reprise relance")
+    func pauseForSleepWhileRestarting() async throws {
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        try #require(launcher.last).exit()
+        #expect(supervisor.state == .restarting(count: 1))
+        var done = 0
+        supervisor.pauseForSleep { done += 1 }
+        #expect(done == 1)
+        #expect(supervisor.isPausedForSleep)
+        #expect(supervisor.state == .stopped)
+        scheduler.advance(by: 60)
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 1, "la relance programmée est annulée")
+        supervisor.resumeAfterSleep()
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 2)
+        #expect(supervisor.state == .running)
+    }
+
+    @Test("Veille pendant la préparation : rien ne sera lancé, completion tout de suite ; la reprise relance")
+    func pauseForSleepWhilePreparing() async throws {
+        preparer.holds = true
+        let supervisor = makeSupervisor()
+        supervisor.start()
+        let held = await waitUntil { preparer.isHeld }
+        try #require(held)
+        var done = 0
+        supervisor.pauseForSleep { done += 1 }
+        #expect(done == 1)
+        #expect(supervisor.state == .stopped)
+        #expect(supervisor.isPausedForSleep)
+        preparer.release()
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.isEmpty, "la préparation abandonnée ne lance rien")
+        supervisor.resumeAfterSleep()
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 1)
+        #expect(supervisor.state == .running)
+    }
+
+    @Test("Veille pendant un arrêt déjà en cours : même sortie, un seul SIGTERM, une completion par demande")
+    func pauseForSleepDuringStop() async throws {
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        let process = try #require(launcher.last)
+        process.ignoresTerminate = true
+        var stopped = 0
+        var paused = 0
+        supervisor.stop { stopped += 1 }
+        supervisor.pauseForSleep { paused += 1 }
+        supervisor.pauseForSleep { paused += 1 }
+        #expect(process.terminations == 1)
+        #expect(stopped == 0 && paused == 0)
+        process.exit(ProcessExit(status: SIGTERM, signaled: true))
+        #expect(stopped == 1 && paused == 2)
+        #expect(supervisor.state == .stopped)
+        #expect(supervisor.isPausedForSleep)
+    }
+
+    @Test("Pendant la pause : « Appliquer » met les réglages de côté, la reprise les utilise ; interrupteur éteint, la reprise ne lance rien")
+    func pauseSettingsAndSwitch() async throws {
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        supervisor.pauseForSleep {}
+        var changed = Go2RTCFixtures.settings()
+        changed.framerate = 25
+        supervisor.configuration = changed
+        supervisor.restart()
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 1)
+        supervisor.resumeAfterSleep()
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 2)
+        #expect(preparer.prepared.last == changed)
+
+        supervisor.pauseForSleep {}
+        supervisor.setEnabled(false)
+        #expect(supervisor.state == .stopped)
+        supervisor.resumeAfterSleep()
+        await supervisor.waitForPreparation()
+        #expect(!supervisor.isPausedForSleep)
+        #expect(supervisor.state == .stopped)
+        #expect(launcher.launched.count == 2)
+    }
+
+    @Test("Reprise pendant que l'arrêt dure encore : go2rtc est relancé à la sortie du gardien, pas avant ; rallumer l'interrupteur entre-temps n'y change rien")
+    func resumeDuringStop() async throws {
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        let process = try #require(launcher.last)
+        process.ignoresTerminate = true
+        var done = 0
+        supervisor.pauseForSleep { done += 1 }
+        supervisor.setEnabled(true)
+        supervisor.resumeAfterSleep()
+        #expect(!supervisor.isPausedForSleep)
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 1)
+        #expect(done == 0)
+        process.exit(ProcessExit(status: SIGTERM, signaled: true))
+        #expect(done == 1)
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 2)
+        #expect(supervisor.state == .running)
+    }
+
+    @Test("Quitter pendant la pause, ou pendant l'arrêt de la veille : rien ne repart à la reprise ; quitter avant la veille : pas de pause")
+    func quitAndPause() async throws {
+        // Pendant la pause.
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        supervisor.pauseForSleep {}
+        var done = 0
+        supervisor.stop(forQuit: true) { done += 1 }
+        #expect(done == 1)
+        supervisor.resumeAfterSleep()
+        await supervisor.waitForPreparation()
+        #expect(launcher.launched.count == 1)
+        #expect(supervisor.state == .stopped)
+
+        // Pendant l'arrêt de la veille : le gardien qui sort tard ne fait rien repartir.
+        let other = makeSupervisor()
+        other.start()
+        await other.waitForPreparation()
+        let process = try #require(launcher.last)
+        process.ignoresTerminate = true
+        other.pauseForSleep {}
+        other.stop(forQuit: true)
+        other.resumeAfterSleep()
+        process.exit(ProcessExit(status: SIGTERM, signaled: true))
+        await other.waitForPreparation()
+        scheduler.advance(by: 60)
+        #expect(launcher.launched.count == 2)
+        #expect(other.state == .stopped)
+
+        // Avant la veille : l'app se termine, la veille n'attend rien.
+        let last = makeSupervisor()
+        last.start()
+        await last.waitForPreparation()
+        let leaving = try #require(launcher.last)
+        leaving.ignoresTerminate = true
+        last.stop(forQuit: true)
+        var acknowledged = 0
+        last.pauseForSleep { acknowledged += 1 }
+        #expect(acknowledged == 1)
+        #expect(!last.isPausedForSleep)
+        #expect(leaving.terminations == 1)
     }
 
     @Test("Fichier personnalisé : lancé sur ce fichier, et l'état le sait ; --rtsp sans --capture (pas de ménage des orphelins)")
