@@ -116,6 +116,8 @@ Conseil de la session go2rtc (règle de l'ancien watchdog, éprouvée le 09/10) 
 
 ## Voix de PTZBot iOS vers talkd par le backchannel de go2rtc (13/10/2026)
 
+**Statut :** fait (31/10/2026), sans option de la génération (décision de Djoko du 31/10) : la voix de la Webcam dans Maison passe par le mode `udp://<IPv4 du Mac>:1986` du plugin Scrypted « go2rtc Intercom », qui envoie à talkd le même PCM que le `returnAudioTarget` de Homebridge (16 kHz, paquets de 640 octets) ; la voix de l'iPhone passe par ptzd depuis la 1.0.3. PTZBot, son yaml et go2rtc ne changent pas. La Webcam a quitté Homebridge pour Scrypted le 31/10.
+
 La spec haut-parleur (§ 5.6) prévoyait une source `exec` avec `#backchannel=1` dans le flux `obsbot`, qui relaie la voix vers `udp://127.0.0.1:1986`. Le yaml est maintenant généré par PTZBot, qui ne connaît pas cette option ; seule voie actuelle : le « fichier personnalisé », qui retire tout le reste à la génération. Proposé : une option de la génération (Réglages › Caméra), puisque talkd est déjà dans l'app. Évolution de la spec B3, à décider.
 
 Conseil de la session go2rtc : une option de la génération plutôt que le fichier personnalisé, soit une entrée de plus dans le flux `obsbot` : `exec:<ffmpeg> -f <format reçu> -i - -f s16le -ar 16000 -ac 1 udp://127.0.0.1:1986?pkt_size=640#backchannel=1#audio=<codec>`. Le format et le codec exacts sont à lire dans `pkg/pcm` de go2rtc 1.9.14 (`NewBackchannel`). Ce ffmpeg ne lit qu'un tuyau : il ne crée aucun client CoreAudio.
@@ -153,7 +155,9 @@ Constats mineurs de la relecture de `feat/expo-auto` laissés ouverts. Réglés 
 
 ## Optimisations de latence du flux vidéo (demande de Djoko, 21/10/2026)
 
-Réduire le délai entre la scène et l'image, dans l'app iOS (WebRTC) comme dans HomeKit (Homebridge).
+Réduire le délai entre la scène et l'image, dans l'app iOS (WebRTC) comme dans HomeKit (Scrypted depuis le 31/10, Homebridge avant).
+
+**Prévu pour la 1.3.0** (décision de Djoko du 31/10/2026 : la 1.2.0 part sans la latence). La branche locale `feat/latence-ios` garde un diagnostic caché dans les réglages de l'app iOS (variantes, SDP, délais de `getStats`), pour la mesure.
 - **Mesurer d'abord**, « de verre à verre » : la caméra filme un chronomètre affiché à l'écran du Mac, et l'iPhone ou Maison montre le même chronomètre filmé. Une photo des deux donne l'écart. Mesurer chaque maillon (capture et encodage ffmpeg, go2rtc, réseau local et Tailscale, lecture iOS, Homebridge).
 - **Pistes côté capture** (yaml généré par PTZBot) : taille et cadence des images clés (`-g`), mode temps réel de VideoToolbox, profil et niveau H.264, `-fflags nobuffer`/`-flags low_delay` (déjà là), files d'attente (`-thread_queue_size`), débit et tampon (`-maxrate`, `-bufsize`).
 - **Pistes côté go2rtc et WebRTC** : tampon de gigue et délai de lecture de WebRTC sur iOS (extension `playout-delay`), transport RTSP interne en TCP ou UDP, synchronisation du son qui peut retarder l'image.
