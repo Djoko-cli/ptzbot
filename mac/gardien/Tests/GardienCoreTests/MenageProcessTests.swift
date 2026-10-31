@@ -228,13 +228,14 @@ struct MenageProcessTests {
         }
     }
 
-    @Test("Sans --capture : aucun orphelin visé, même avec l'empreinte d'un yaml de PTZBot")
+    @Test("Sans --capture : aucun orphelin visé ; avec --capture de la même empreinte : le même orphelin est visé")
     func noOrphanSweepWithoutFingerprints() async throws {
         let listener = try LocalListener()
         let files = FakeFiles()
+        let fingerprint = Self.randomFingerprint()
         var identities: [ProcessIdentity] = []
         defer { cleanUp([], identities, files: [files]) }
-        identities.append(try await launchOrphan(files, output: "rtsp://127.0.0.1:\(listener.port)/\(Self.randomFingerprint())"))
+        identities.append(try await launchOrphan(files, output: "rtsp://127.0.0.1:\(listener.port)/\(fingerprint)"))
         let goPID = FileManager.default.temporaryDirectory.appending(path: "menage-\(UUID().uuidString).go")
         let parent = try launch(URL(fileURLWithPath: "/bin/sleep"), ["60"])
         let gardien = try launchGardien(parent: parent, options: ["--rtsp", String(listener.port)] + Self.fastSweep,
@@ -244,5 +245,16 @@ struct MenageProcessTests {
         try await Task.sleep(for: .seconds(2.5))
         #expect(files.received == 0)
         #expect(ProcessTable.isAlive(identities[0]))
+        // Témoin positif : un gardien lancé avec l'empreinte de cet orphelin le vise, ce qui montre que le test ci-dessus
+        // n'est pas vrai par défaut (détection cassée).
+        let witnessGoPID = FileManager.default.temporaryDirectory.appending(path: "menage-\(UUID().uuidString).go")
+        let witnessParent = try launch(URL(fileURLWithPath: "/bin/sleep"), ["60"])
+        let witness = try launchGardien(
+            parent: witnessParent, options: ["--rtsp", String(listener.port), "--capture", fingerprint] + Self.fastSweep,
+            script: #"echo $$ > "$1"; exec /bin/sleep 60"#, arguments: [witnessGoPID.path]
+        )
+        identities.append(try await identity(witnessGoPID))
+        defer { cleanUp([witnessParent, witness], [], files: [], extra: [witnessGoPID]) }
+        #expect(try await wait(.seconds(10)) { files.received > 0 }, "avec --capture, l'orphelin est visé")
     }
 }
