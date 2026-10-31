@@ -321,9 +321,9 @@ public final class TrackingReconciler {
             resume(reason: "relecture")
         case .mode(.switching):
             // La caméra bascule : rien à conclure, relu un peu plus tard (cinq fois au plus de suite : une caméra bloquée à
-            // ce mode ne fait pas boucler la relecture).
+            // ce mode ne fait pas boucler la relecture). Une lecture « on » juste avant reste retenue : un geste qui coupe le
+            // suivi peut passer par ce mode.
             switchingReads += 1
-            lastReadOn = false
             confirming = confirmation
             readFirstReason = readFirst
             if switchingReads >= Self.maxSwitchingReads {
