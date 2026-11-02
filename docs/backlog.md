@@ -183,3 +183,17 @@ Constat de Djoko : après une longue veille du Mac, le suivi IA ne revient pas, 
 - **ajouter une relecture périodique** de l'état réel du suivi par l'utilitaire du SDK (toujours chargé depuis la 1.1.1), par exemple toutes les 30 s, sur le modèle de la relecture de la vie privée : si le suivi est voulu mais lu coupé, le relancer ; vérifier d'abord quel champ du SDK donne le mode IA de la Tiny 2 ;
 - passer par la même file que la vie privée et l'exposition, la vie privée restant prioritaire ;
 - au banc : veille du Mac d'une heure ou plus, suivi activé avant ; puis caméra débranchée et rebranchée, suivi activé.
+
+## Toucher pour faire la mise au point (app iOS, demande de Djoko, 02/11/2026)
+
+Un toucher sur la vidéo de PTZBot iOS pour faire la mise au point sur ce point de l'image, comme dans l'app Appareil photo : un repère carré à l'endroit touché, puis la caméra fait le point. Sans conflit avec le joystick, le tap du mode épuré, le double tap et le pincement du zoom de l'affichage (geste à choisir : appui long, ou toucher en mode dédié).
+
+Ce que le SDK offre, lu le 02/11 (à confirmer sur la caméra) :
+- sur la Tiny 2 : la position du moteur de mise au point, avec l'autofocus actif ou coupé, et la mise au point sur visage ;
+- la sélection d'une cible par un point ou un cadre de l'image n'existe que pour la Tail 2 et les modèles suivants, pas pour la Tiny 2.
+
+À faire :
+- **chercher d'abord une vraie mise au point sur une zone** pour la Tiny 2 : commandes UVC (région d'autofocus), OBSBOT Center, versions plus récentes du SDK ;
+- à défaut, proposer à Djoko une approximation : toucher un visage pour la mise au point sur visage, ou une mise au point manuelle réglée par un curseur, avec retour à l'autofocus ;
+- passer par ptzd, dans la même file que la vie privée, l'exposition et le suivi IA ; la vie privée reste prioritaire ;
+- tenir compte du zoom de l'affichage : convertir le point touché dans les coordonnées de l'image entière.
