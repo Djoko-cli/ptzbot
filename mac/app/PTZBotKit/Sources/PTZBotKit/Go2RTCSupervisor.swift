@@ -21,7 +21,7 @@ public enum SleepResume: Equatable, Sendable {
     case notPaused
     /// go2rtc relancé.
     case relaunched
-    /// Le gardien n'est pas encore sorti : go2rtc repartira à sa sortie.
+    /// Le gardien n'est pas encore sorti : go2rtc repartira à sa sortie ; s'il ne sort pas, l'arrêt finit en échec.
     case afterGardienExits
     /// L'interrupteur a été éteint pendant la pause : rien à relancer.
     case switchedOff
@@ -284,8 +284,9 @@ public final class Go2RTCSupervisor {
         guard isPausedForSleep else { return .notPaused }
         isPausedForSleep = false
         guard !quitting else { return .quitting }
-        // Un échec pendant la pause (gardien qui ne s'arrête pas) reste un échec, comme hors pause : relancer ici
-        // doublerait les captures d'un gardien peut-être encore vivant.
+        // Un échec pendant la pause reste un échec, comme hors pause : relancer ici doublerait les captures d'un gardien
+        // peut-être encore vivant. C'est le seul échec possible pendant la pause (gardien qui ne s'arrête pas) : la
+        // préparation et le lancement n'y ont pas lieu.
         if case .failed = state { return .failed }
         guard isEnabled else { return .switchedOff }
         if stopping {

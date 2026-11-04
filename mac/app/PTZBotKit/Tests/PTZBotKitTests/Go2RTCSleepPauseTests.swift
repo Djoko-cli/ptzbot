@@ -44,7 +44,7 @@ struct Go2RTCSleepPauseTests {
     static let darkWake = "écrans toujours éteints (réveil sombre) : go2rtc reste arrêté"
     static let resumed = "réveil complet : go2rtc relancé"
     static let stillOff = "réveil complet : go2rtc éteint, rien à relancer"
-    static let resumedAfterGardien = "réveil complet : go2rtc relancé à la sortie du gardien"
+    static let resumedAfterGardien = "réveil complet : gardien pas encore sorti, go2rtc repartira s'il sort"
     static let stillFailed = "réveil complet : go2rtc en échec, rien à relancer"
     static let quittingNow = "réveil complet : l'app se termine, rien à relancer"
     static let limitReached = "go2rtc toujours en cours d'arrêt après 20 s : la veille part quand même"

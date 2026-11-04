@@ -111,7 +111,7 @@ public final class Go2RTCSleepPause {
         switch outcome {
         case .notPaused: nil
         case .relaunched: "réveil complet : go2rtc relancé"
-        case .afterGardienExits: "réveil complet : go2rtc relancé à la sortie du gardien"
+        case .afterGardienExits: "réveil complet : gardien pas encore sorti, go2rtc repartira s'il sort"
         case .switchedOff: "réveil complet : go2rtc éteint, rien à relancer"
         case .failed: "réveil complet : go2rtc en échec, rien à relancer"
         case .quitting: "réveil complet : l'app se termine, rien à relancer"

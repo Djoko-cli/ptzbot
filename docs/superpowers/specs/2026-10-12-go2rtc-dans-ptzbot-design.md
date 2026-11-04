@@ -466,8 +466,8 @@ Djoko le 31/10/2026, à partir d'un diagnostic fait en lecture seule.
     « go2rtc toujours en cours d'arrêt après 20 s : la veille part quand même » ; « veille annoncée : go2rtc ne tournait
     pas » ; « sortie de veille : reprise de go2rtc si les écrans restent allumés 5 s » (seulement pendant une pause) ;
     « écrans toujours éteints (réveil sombre) : go2rtc reste arrêté » ; au vrai réveil, la ligne dit ce que la reprise a
-    fait (`SleepResume`) : « réveil complet : go2rtc relancé », « … relancé à la sortie du gardien » (le gardien n'est pas
-    encore sorti), « … éteint, rien à relancer » (interrupteur éteint pendant la pause), « … en échec, rien à relancer »
+    fait (`SleepResume`) : « réveil complet : go2rtc relancé », « réveil complet : gardien pas encore sorti, go2rtc repartira s'il
+    sort » (s'il ne sort pas, l'arrêt finit en échec et rien ne repart), « … éteint, rien à relancer » (interrupteur éteint pendant la pause), « … en échec, rien à relancer »
     (go2rtc a échoué pendant la pause : un échec reste un échec, aucun second gardien) ou « … l'app se termine, rien à
     relancer ». Aucune ne contient un motif
     que `Go2RTCLogPatterns` reconnaît (§ 5) : un test le vérifie.
