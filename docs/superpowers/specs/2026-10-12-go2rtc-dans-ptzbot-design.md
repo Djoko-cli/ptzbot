@@ -465,8 +465,11 @@ Djoko le 31/10/2026, à partir d'un diagnostic fait en lecture seule.
     « veille annoncée : go2rtc s'arrête avant la veille » ; « go2rtc arrêté en 2,4 s : la veille peut partir » ;
     « go2rtc toujours en cours d'arrêt après 20 s : la veille part quand même » ; « veille annoncée : go2rtc ne tournait
     pas » ; « sortie de veille : reprise de go2rtc si les écrans restent allumés 5 s » (seulement pendant une pause) ;
-    « écrans toujours éteints (réveil sombre) : go2rtc reste arrêté » ; « réveil complet : go2rtc relancé » (ou « réveil
-    complet : go2rtc éteint, rien à relancer » si l'interrupteur a été éteint pendant la pause). Aucune ne contient un motif
+    « écrans toujours éteints (réveil sombre) : go2rtc reste arrêté » ; au vrai réveil, la ligne dit ce que la reprise a
+    fait (`SleepResume`) : « réveil complet : go2rtc relancé », « … relancé à la sortie du gardien » (le gardien n'est pas
+    encore sorti), « … éteint, rien à relancer » (interrupteur éteint pendant la pause), « … en échec, rien à relancer »
+    (go2rtc a échoué pendant la pause : un échec reste un échec, aucun second gardien) ou « … l'app se termine, rien à
+    relancer ». Aucune ne contient un motif
     que `Go2RTCLogPatterns` reconnaît (§ 5) : un test le vérifie.
 - **Ce que ça change.**
   - macOS n'attend plus les captures à la veille du Mac (plus de `ffmpeg timed out(30000 ms)`), et plus aucun ffmpeg ne
