@@ -469,10 +469,13 @@ Djoko le 31/10/2026, à partir d'un diagnostic fait en lecture seule.
     complet : go2rtc éteint, rien à relancer » si l'interrupteur a été éteint pendant la pause). Aucune ne contient un motif
     que `Go2RTCLogPatterns` reconnaît (§ 5) : un test le vérifie.
 - **Ce que ça change.**
-  - La veille du Mac n'est plus retardée de 30 s par les captures, et plus aucun ffmpeg ne reste bloqué après une veille :
-    plus de `[exec] timeout` ni d'alerte « Des captures ffmpeg sont bloquées » au réveil.
+  - macOS n'attend plus les captures à la veille du Mac (plus de `ffmpeg timed out(30000 ms)`), et plus aucun ffmpeg ne
+    reste bloqué après une veille : plus de `[exec] timeout` ni d'alerte « Des captures ffmpeg sont bloquées » au réveil.
+    Mesuré au banc (01/11 et 05/11) : le Mac ne s'endort pas plus vite pour autant, l'écart écran éteint → veille reste
+    d'environ 29 s et le réveil sombre de 45 s, comme en 1.2.0 ; l'attente des ffmpeg se faisait en même temps.
   - La Webcam est absente de Maison pendant la veille, comme avant (l'image se figeait déjà quand la caméra quittait le
-    bus USB). Scrypted se reconnecte au réveil, quand go2rtc est relancé (à confirmer au banc).
+    bus USB). Scrypted se reconnecte au réveil, quand go2rtc est relancé (vu au banc du 05/11). La
+    caméra OBSBOT se baisse pendant la veille, puisque personne n'utilise son image, et se relève au lancement de go2rtc.
   - Pendant les réveils sombres, aucune capture. Le panneau montre « Arrêté » pendant la pause : la pause ne change pas
     l'interrupteur.
   - Une caméra encore absente à la reprise ne laisse plus go2rtc en échec : il part dès qu'elle revient, dans les 30 s.
