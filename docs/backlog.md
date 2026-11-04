@@ -202,12 +202,12 @@ Ce que le SDK offre, lu le 02/11 (à confirmer sur la caméra) :
 
 Le panneau de la barre des menus nomme deux lignes par le nom technique du service (`PanelView.swift`) : « Service ptzd » et « go2rtc ». Les remplacer par ce que fait le service, en français et en anglais (`Localizable.xcstrings`).
 
-Libellés à arrêter avec Djoko :
-- **ptzd** : « Contrôle à distance » (proposition de Djoko) ou « Pilotage de la caméra » (proposition de Claude : les réglages du Mac lui-même, exposition, suivi IA et vie privée, passent aussi par ptzd, pas seulement l'iPhone) ;
-- **go2rtc** : « Flux vidéo en direct et HomeKit » (proposition de Djoko) ou « Vidéo en direct et Maison » (proposition de Claude : plus court pour une ligne de menu, et « Maison » est le nom que l'utilisateur voit chez Apple, HomeKit étant le nom technique).
+Libellés choisis par Djoko le 05/11/2026 :
+- **ptzd** devient « Pilotage de la caméra » : les réglages du Mac lui-même (exposition, suivi IA, vie privée) passent aussi par ptzd, pas seulement l'iPhone, donc « Contrôle à distance » disait moins que ce qu'il fait ;
+- **go2rtc** devient « Vidéo en direct et Maison » : plus court pour une ligne de menu, et « Maison » est le nom que l'utilisateur voit chez Apple, HomeKit étant le nom technique ;
+- **Talkback** garde son nom.
 
 À faire :
 - appliquer les mêmes noms aux messages qui citent le service (« ptzd ne répond pas », « go2rtc s'arrête sans cesse : ouvrez le journal », etc.), en gardant le nom technique là où il aide au diagnostic : journal, info-bulle de la ligne ;
 - traductions anglaises du même sens ;
-- vérifier la largeur du panneau avec les nouveaux libellés, en français et en anglais ;
-- voir avec Djoko si « Talkback » suit le même principe (par exemple « Haut-parleur du Mac »).
+- vérifier la largeur du panneau avec les nouveaux libellés, en français et en anglais.
