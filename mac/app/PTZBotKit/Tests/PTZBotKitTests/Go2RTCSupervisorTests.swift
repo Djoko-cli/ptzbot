@@ -492,10 +492,41 @@ struct Go2RTCSupervisorTests {
         preparer.release()
         await supervisor.waitForPreparation()
         #expect(launcher.launched.isEmpty, "la préparation abandonnée ne lance rien")
-        supervisor.resumeAfterSleep()
+        #expect(supervisor.resumeAfterSleep() == .relaunched)
         await supervisor.waitForPreparation()
         #expect(launcher.launched.count == 1)
         #expect(supervisor.state == .running)
+    }
+
+    @Test("Veille pendant les nouveaux essais de la caméra (réveil, caméra pas encore revenue, nouvelle veille) : plus aucun essai ; la reprise recommence avec un compte neuf")
+    func pauseForSleepDuringDeviceRetries() async throws {
+        preparer.result = .blocked(.cameraMissing)
+        let supervisor = makeSupervisor()
+        await started(supervisor)
+        scheduler.advance(by: Go2RTCSupervisor.deviceRetryDelay)
+        await supervisor.waitForPreparation()
+        #expect(preparer.prepared.count == 2)
+        #expect(supervisor.state == .starting)
+        var done = 0
+        supervisor.pauseForSleep { done += 1 }
+        #expect(done == 1, "rien ne tourne : la veille part tout de suite")
+        #expect(supervisor.isPausedForSleep)
+        #expect(supervisor.state == .stopped)
+        scheduler.advance(by: 60)
+        await supervisor.waitForPreparation()
+        #expect(preparer.prepared.count == 2, "plus aucun essai pendant la pause")
+        #expect(launcher.launched.isEmpty)
+        #expect(supervisor.resumeAfterSleep() == .relaunched)
+        await supervisor.waitForPreparation()
+        #expect(preparer.prepared.count == 3)
+        // Compte neuf : 15 nouveaux essais avant l'échec, et non ce qui restait avant la veille.
+        for _ in 0 ..< Go2RTCSupervisor.deviceRetries {
+            #expect(supervisor.state == .starting)
+            scheduler.advance(by: Go2RTCSupervisor.deviceRetryDelay)
+            await supervisor.waitForPreparation()
+        }
+        #expect(supervisor.state == .failed(.blocked(.cameraMissing)))
+        #expect(preparer.prepared.count == 3 + Go2RTCSupervisor.deviceRetries)
     }
 
     @Test("Veille pendant un arrêt déjà en cours : même sortie, un seul SIGTERM, une completion par demande")
@@ -536,7 +567,8 @@ struct Go2RTCSupervisorTests {
         supervisor.pauseForSleep {}
         supervisor.setEnabled(false)
         #expect(supervisor.state == .stopped)
-        supervisor.resumeAfterSleep()
+        #expect(supervisor.resumeAfterSleep() == .switchedOff)
+        #expect(supervisor.resumeAfterSleep() == .notPaused, "une seule reprise par pause")
         await supervisor.waitForPreparation()
         #expect(!supervisor.isPausedForSleep)
         #expect(supervisor.state == .stopped)
@@ -552,7 +584,7 @@ struct Go2RTCSupervisorTests {
         var done = 0
         supervisor.pauseForSleep { done += 1 }
         supervisor.setEnabled(true)
-        supervisor.resumeAfterSleep()
+        #expect(supervisor.resumeAfterSleep() == .afterGardienExits)
         #expect(!supervisor.isPausedForSleep)
         await supervisor.waitForPreparation()
         #expect(launcher.launched.count == 1)
@@ -573,7 +605,7 @@ struct Go2RTCSupervisorTests {
         var done = 0
         supervisor.stop(forQuit: true) { done += 1 }
         #expect(done == 1)
-        supervisor.resumeAfterSleep()
+        #expect(supervisor.resumeAfterSleep() == .quitting)
         await supervisor.waitForPreparation()
         #expect(launcher.launched.count == 1)
         #expect(supervisor.state == .stopped)

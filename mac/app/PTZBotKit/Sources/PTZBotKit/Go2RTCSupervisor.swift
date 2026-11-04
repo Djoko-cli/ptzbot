@@ -15,6 +15,22 @@ public enum Go2RTCFailure: Equatable, Sendable {
     case unkillable
 }
 
+/// Ce que fait `Go2RTCSupervisor.resumeAfterSleep()` au vrai réveil (spec B3 § 15).
+public enum SleepResume: Equatable, Sendable {
+    /// Pas de pause en cours : rien.
+    case notPaused
+    /// go2rtc relancé.
+    case relaunched
+    /// Le gardien n'est pas encore sorti : go2rtc repartira à sa sortie.
+    case afterGardienExits
+    /// L'interrupteur a été éteint pendant la pause : rien à relancer.
+    case switchedOff
+    /// go2rtc a échoué pendant la pause (gardien qui ne s'arrête pas) : un échec reste un échec.
+    case failed
+    /// L'app se termine : rien à relancer.
+    case quitting
+}
+
 /// Lance go2rtc par le gardien (spec B3 § 3.2 et § 3.3 ; lancé par launchd, § 14), le relance s'il s'arrête et
 /// l'arrête en douceur, aussi avant la veille du Mac (§ 15). Sur le modèle de `ServiceSupervisor` (ptzd), avec une
 /// préparation avant chaque lancement.
@@ -262,15 +278,22 @@ public final class Go2RTCSupervisor {
     }
 
     /// Le vrai réveil : go2rtc repart s'il est allumé. Si le gardien n'est pas encore sorti, il est relancé à sa sortie,
-    /// comme avec `setEnabled`. Sans effet hors d'une pause.
-    public func resumeAfterSleep() {
-        guard isPausedForSleep else { return }
+    /// comme avec `setEnabled`. Sans effet hors d'une pause. Rend ce qui a été fait, pour le journal.
+    @discardableResult
+    public func resumeAfterSleep() -> SleepResume {
+        guard isPausedForSleep else { return .notPaused }
         isPausedForSleep = false
+        guard !quitting else { return .quitting }
+        // Un échec pendant la pause (gardien qui ne s'arrête pas) reste un échec, comme hors pause : relancer ici
+        // doublerait les captures d'un gardien peut-être encore vivant.
+        if case .failed = state { return .failed }
+        guard isEnabled else { return .switchedOff }
         if stopping {
-            restartAfterStop = !quitting
-        } else {
-            start()
+            restartAfterStop = true
+            return .afterGardienExits
         }
+        start()
+        return .relaunched
     }
 
     /// Attend la fin de la préparation en cours (tests).

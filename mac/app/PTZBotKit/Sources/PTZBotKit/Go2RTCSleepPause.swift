@@ -99,9 +99,23 @@ public final class Go2RTCSleepPause {
             scheduleCheck(after: Self.recheckInterval)
             return
         }
-        // L'interrupteur a pu être éteint pendant la pause : la reprise ne lancera alors rien.
-        log(supervisor.isEnabled ? "réveil complet : go2rtc relancé" : "réveil complet : go2rtc éteint, rien à relancer")
-        supervisor.resumeAfterSleep()
+        // La ligne dit ce que la reprise a vraiment fait : l'interrupteur a pu être éteint, go2rtc échouer ou l'app se
+        // terminer pendant la pause, et le gardien peut ne pas être encore sorti.
+        if let line = Self.resumeLine(supervisor.resumeAfterSleep()) {
+            log(line)
+        }
+    }
+
+    /// La ligne du journal pour chaque issue de la reprise ; aucune hors d'une pause.
+    static func resumeLine(_ outcome: SleepResume) -> String? {
+        switch outcome {
+        case .notPaused: nil
+        case .relaunched: "réveil complet : go2rtc relancé"
+        case .afterGardienExits: "réveil complet : go2rtc relancé à la sortie du gardien"
+        case .switchedOff: "réveil complet : go2rtc éteint, rien à relancer"
+        case .failed: "réveil complet : go2rtc en échec, rien à relancer"
+        case .quitting: "réveil complet : l'app se termine, rien à relancer"
+        }
     }
 
     private func scheduleCheck(after delay: TimeInterval) {

@@ -44,6 +44,9 @@ struct Go2RTCSleepPauseTests {
     static let darkWake = "écrans toujours éteints (réveil sombre) : go2rtc reste arrêté"
     static let resumed = "réveil complet : go2rtc relancé"
     static let stillOff = "réveil complet : go2rtc éteint, rien à relancer"
+    static let resumedAfterGardien = "réveil complet : go2rtc relancé à la sortie du gardien"
+    static let stillFailed = "réveil complet : go2rtc en échec, rien à relancer"
+    static let quittingNow = "réveil complet : l'app se termine, rien à relancer"
     static let limitReached = "go2rtc toujours en cours d'arrêt après 20 s : la veille part quand même"
     static func stopped(in seconds: String) -> String {
         "go2rtc arrêté en \(seconds) s : la veille peut partir"
@@ -142,7 +145,7 @@ struct Go2RTCSleepPauseTests {
         #expect(around.lines == [Self.announced, Self.limitReached])
     }
 
-    @Test("Gardien qui ne sort pas même après SIGKILL : acquittement à 20 s, puis échec « ne s'arrête pas » sans second acquittement")
+    @Test("Gardien qui ne sort pas même après SIGKILL : acquittement à 20 s, puis échec « ne s'arrête pas » sans second acquittement ; le réveil ne relance rien")
     func gardienUnkillable() async throws {
         let (supervisor, pause) = await running()
         let process = try #require(launcher.last)
@@ -154,6 +157,14 @@ struct Go2RTCSleepPauseTests {
         #expect(supervisor.state == .failed(.unkillable))
         #expect(around.acknowledgements == 1)
         #expect(around.lines == [Self.announced, Self.limitReached])
+        // Un échec reste un échec, comme hors pause : un second gardien doublerait les captures du premier, peut-être vivant.
+        pause.systemDidWake()
+        scheduler.advance(by: 5)
+        await supervisor.waitForPreparation()
+        #expect(!supervisor.isPausedForSleep)
+        #expect(launcher.launched.count == 1)
+        #expect(supervisor.state == .failed(.unkillable))
+        #expect(around.lines.last == Self.stillFailed)
     }
 
     @Test("Veille sans rien à arrêter : veille acquittée tout de suite, pas de pause, état inchangé, réveil sans effet",
@@ -249,6 +260,7 @@ struct Go2RTCSleepPauseTests {
         await supervisor.waitForPreparation()
         #expect(launcher.launched.count == 1)
         #expect(supervisor.state == .stopped)
+        #expect(around.lines.last == Self.quittingNow)
     }
 
     @Test("Veille annoncée pendant que l'app quitte : rien à arrêter de plus, veille acquittée tout de suite")
@@ -412,6 +424,7 @@ struct Go2RTCSleepPauseTests {
         #expect(!supervisor.isPausedForSleep)
         #expect(launcher.launched.count == 1, "le gardien n'est pas encore sorti")
         #expect(around.acknowledgements == 0)
+        #expect(around.lines.last == Self.resumedAfterGardien)
         process.exit(ProcessExit(status: SIGTERM, signaled: true))
         #expect(around.acknowledgements == 1)
         await supervisor.waitForPreparation()
@@ -432,6 +445,7 @@ struct Go2RTCSleepPauseTests {
         scheduler.advance(by: 5)
         #expect(!supervisor.isPausedForSleep)
         #expect(launcher.launched.count == 1)
+        #expect(around.lines.last == Self.resumedAfterGardien)
         process.exit(ProcessExit(status: SIGKILL, signaled: true))
         await supervisor.waitForPreparation()
         #expect(launcher.launched.count == 2)
@@ -498,7 +512,11 @@ struct Go2RTCSleepPauseTests {
             Self.limitReached, Self.stillOff,
         ]
         #expect(Set(around.lines) == everyLine, "le scénario écrit chacune des lignes")
-        for line in around.lines {
+        // Les lignes de la reprise que ce scénario n'atteint pas (gardien sorti tard, échec, app qui quitte).
+        let outcomes: [SleepResume] = [.notPaused, .relaunched, .afterGardienExits, .switchedOff, .failed, .quitting]
+        let resumeLines = outcomes.compactMap(Go2RTCSleepPause.resumeLine)
+        #expect(resumeLines == [Self.resumed, Self.resumedAfterGardien, Self.stillOff, Self.stillFailed, Self.quittingNow])
+        for line in around.lines + resumeLines {
             #expect(Go2RTCLogPatterns.scan(line) == Go2RTCLogScan(), "\(line)")
             #expect(Go2RTCLogPatterns.scan(Go2RTCJournal.line(line, at: Date()) + "\n") == Go2RTCLogScan(), "\(line)")
         }
