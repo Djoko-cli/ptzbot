@@ -3,6 +3,21 @@
   <channel>
     <title>PTZBot</title>
     <item>
+      <title>1.2.1</title>
+      <pubDate>Thu, 05 Nov 2026 08:16:03 +0000</pubDate>
+      <sparkle:version>359</sparkle:version>
+      <sparkle:shortVersionString>1.2.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+<meta charset="utf-8">
+<p><strong>English</strong></p>
+<ul><li><strong>macOS no longer waits on the camera captures when the Mac goes to sleep.</strong> go2rtc's two ffmpeg captures never answered the Mac's "going to sleep" notice, so macOS waited up to 30 seconds on them at every sleep. PTZBot now stops go2rtc just before the Mac sleeps (waiting 20 seconds at most, about 1 to 3 seconds in practice) and starts it again only when the Mac really wakes up, that is when the screen has been on for 5 seconds; during brief wake-ups with the screen off, nothing captures. This does not make the Mac fall asleep sooner: macOS still takes about 30 seconds after the screen turns off, as before. While the Mac sleeps, the camera is absent from the Home app and the OBSBOT camera lowers itself, since nothing uses its picture; it rises again when go2rtc starts, a few seconds after the Mac wakes up.</li><li><strong>No more stuck ffmpeg captures after the Mac sleeps.</strong> go2rtc no longer keeps restarting captures on a camera that has left the USB bus during sleep, so the "ffmpeg captures are stuck" alert no longer shows up after a sleep.</li><li><strong>A camera that is slow to come back no longer leaves go2rtc stopped.</strong> If the OBSBOT camera or microphone is not there yet when go2rtc starts (after the Mac wakes up, or when you log in), PTZBot tries again every 2 seconds for 30 seconds, instead of showing "OBSBOT camera missing" until you switch go2rtc off and on.</li></ul>
+<p><strong>Français</strong></p>
+<ul><li><strong>macOS n'attend plus les captures de la caméra quand le Mac se met en veille.</strong> Les deux captures ffmpeg de go2rtc n'acquittaient jamais l'annonce de mise en veille du Mac : macOS les attendait jusqu'à 30 secondes à chaque veille. PTZBot arrête désormais go2rtc juste avant la veille du Mac (20 secondes d'attente au plus, 1 à 3 secondes en pratique) et ne le relance qu'au vrai réveil, c'est-à-dire quand l'écran est allumé depuis 5 secondes ; pendant les brefs réveils écran éteint, rien ne capture. Le Mac ne s'endort pas plus vite pour autant : macOS prend toujours une trentaine de secondes après l'extinction de l'écran, comme avant. Pendant la veille, la caméra est absente de Maison et la caméra OBSBOT se baisse, puisque personne n'utilise son image ; elle se relève quand go2rtc repart, quelques secondes après le réveil.</li><li><strong>Plus de captures ffmpeg bloquées après une veille.</strong> go2rtc ne relance plus sans cesse des captures sur une caméra qui a quitté le bus USB pendant la veille : l'alerte « Des captures ffmpeg sont bloquées » n'apparaît plus après une veille.</li><li><strong>Une caméra lente à revenir ne laisse plus go2rtc arrêté.</strong> Si la caméra ou le micro OBSBOT n'est pas encore là au lancement de go2rtc (au réveil du Mac, ou à l'ouverture de session), PTZBot réessaie toutes les 2 secondes pendant 30 secondes, au lieu d'afficher « Caméra OBSBOT absente » jusqu'à ce que vous éteigniez et rallumiez go2rtc.</li></ul>
+]]></description>
+      <enclosure url="https://github.com/Djoko-cli/ptzbot/releases/download/ptzbot-v1.2.1/PTZBot-1.2.1.dmg" length="12333441" type="application/octet-stream" sparkle:edSignature="29SJQpToayHXID6vqJBJpHdGQ1+U/2T/eK7gTc9jGBbG8uIQJonFeD9q3/7HEqwPleg9LvUJCXV6Ao6BfSOOBA=="/>
+    </item>
+    <item>
       <title>1.2.0</title>
       <pubDate>Sat, 31 Oct 2026 16:45:41 +0000</pubDate>
       <sparkle:version>346</sparkle:version>
